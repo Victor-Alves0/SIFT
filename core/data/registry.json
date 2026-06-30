@@ -1,0 +1,124 @@
+{
+  "google_workspace": {
+    "d": "Google Workspace services: email (Gmail), files (Drive), calendar. Serviços Google: e-mail, arquivos, agenda.",
+    "services": {
+      "gmail": {
+        "d": "Gmail email service: read, search and send emails. Serviço de e-mail: ler, buscar e enviar mensagens.",
+        "fns": {
+          "read": {
+            "d": "Read emails from the inbox, newest first. Ler e-mails da caixa de entrada.",
+            "p": {
+              "q": "string:o::Gmail search query, ex: is:unread or from:joao (default is:unread)",
+              "m": "number:o:10:max number of emails to return"
+            },
+            "r": ["id", "subject", "from", "snippet", "date"]
+          },
+          "query": {
+            "d": "Search emails by query and return lightweight matches. Buscar e-mails por consulta.",
+            "p": {
+              "q": "string:n::Gmail search query"
+            },
+            "r": ["id", "subject", "from", "date"]
+          },
+          "send": {
+            "d": "Send a new email. Enviar um novo e-mail.",
+            "p": {
+              "to": "string:n::recipient email address",
+              "subject": "string:n::email subject",
+              "body": "string:n::email body text"
+            },
+            "r": ["id", "status"],
+            "risk": true
+          }
+        }
+      },
+      "drive": {
+        "d": "Google Drive files: list and read documents. Arquivos do Google Drive: listar e ler.",
+        "fns": {
+          "list": {
+            "d": "List files in Drive, optionally filtered. Listar arquivos do Drive.",
+            "p": {
+              "q": "string:o::name or type filter"
+            },
+            "r": ["id", "name", "mimeType", "modifiedTime"]
+          },
+          "read": {
+            "d": "Read the content of a Drive file by id. Ler o conteúdo de um arquivo.",
+            "p": {
+              "id": "string:n::file id"
+            },
+            "r": ["id", "name", "content"]
+          },
+          "delete": {
+            "d": "Permanently delete a Drive file by id. Apagar permanentemente um arquivo.",
+            "p": {
+              "id": "string:n::file id"
+            },
+            "r": ["id", "status"],
+            "risk": true
+          }
+        }
+      }
+    }
+  },
+  "microsoft": {
+    "d": "Microsoft 365 services: Outlook email, OneDrive, Teams. Serviços Microsoft.",
+    "services": {
+      "outlook": {
+        "d": "Outlook email service: read emails. Serviço de e-mail Outlook.",
+        "fns": {
+          "read": {
+            "d": "Read emails from the Outlook inbox. Ler e-mails do Outlook.",
+            "p": {
+              "q": "string:o::search query",
+              "m": "number:o:10:max number of emails"
+            },
+            "r": ["id", "subject", "from", "preview", "date"]
+          }
+        }
+      }
+    }
+  },
+  "local": {
+    "d": "Local machine tools: filesystem access. Ferramentas locais: sistema de arquivos.",
+    "services": {
+      "filesystem": {
+        "d": "Local filesystem: list directories and read files. Sistema de arquivos local.",
+        "fns": {
+          "list": {
+            "d": "List files in a local directory. Listar arquivos de um diretório.",
+            "p": {
+              "path": "string:n::absolute directory path"
+            },
+            "r": ["name", "size", "isDir"]
+          },
+          "read": {
+            "d": "Read a local text file. Ler um arquivo de texto local.",
+            "p": {
+              "path": "string:n::absolute file path"
+            },
+            "r": ["path", "content"]
+          }
+        }
+      }
+    }
+  },
+  "web": {
+    "d": "Web tools: search the internet. Ferramentas web: buscar na internet.",
+    "services": {
+      "search": {
+        "d": "Web search engine. Mecanismo de busca na web.",
+        "fns": {
+          "run": {
+            "d": "Search the web and return top results. Buscar na web.",
+            "p": {
+              "q": "string:n::search query",
+              "n": "number:o:5:number of results"
+            },
+            "r": ["title", "url", "snippet"]
+          }
+        }
+      }
+    }
+  }
+}

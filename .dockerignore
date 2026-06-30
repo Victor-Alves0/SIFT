@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+embed-svc/.venv
+**/__pycache__
+*.egg-info
+build
+dist
+.pytest_cache
+.ruff_cache
+core
+benchmarks/results.json
+.env
+*.local

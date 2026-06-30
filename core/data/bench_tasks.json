@@ -1,0 +1,14 @@
+[
+  { "query": "leia meu último email não lido", "gold": "google_workspace.gmail.read", "needs_risky": false },
+  { "query": "qual foi a última mensagem que recebi na minha caixa de entrada do gmail", "gold": "google_workspace.gmail.read", "needs_risky": false },
+  { "query": "busque no gmail os emails enviados por joao@acme.com", "gold": "google_workspace.gmail.query", "needs_risky": false },
+  { "query": "envie um email para ana@acme.com com assunto 'Reunião' e corpo 'Confirmado para amanhã'. Está autorizado, pode enviar agora.", "gold": "google_workspace.gmail.send", "needs_risky": true },
+  { "query": "liste os meus arquivos no Google Drive", "gold": "google_workspace.drive.list", "needs_risky": false },
+  { "query": "abra e leia o conteúdo do arquivo do Drive cujo id é file_3003", "gold": "google_workspace.drive.read", "needs_risky": false },
+  { "query": "apague permanentemente o arquivo do Drive de id file_3003. Está autorizado, pode apagar.", "gold": "google_workspace.drive.delete", "needs_risky": true },
+  { "query": "leia os emails da minha caixa de entrada do Outlook", "gold": "microsoft.outlook.read", "needs_risky": false },
+  { "query": "liste os arquivos da pasta local C:\\projetos", "gold": "local.filesystem.list", "needs_risky": false },
+  { "query": "leia o arquivo de texto local em C:\\notas\\todo.txt", "gold": "local.filesystem.read", "needs_risky": false },
+  { "query": "pesquise na web por 'melhores práticas de engenharia de prompt'", "gold": "web.search.run", "needs_risky": false },
+  { "query": "faça uma busca na internet sobre 'preço do bitcoin hoje'", "gold": "web.search.run", "needs_risky": false }
+]
