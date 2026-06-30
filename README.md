@@ -9,7 +9,11 @@
 **3 meta-tools** instead of a 30k-token catalogue — it discovers the rest by
 navigating. Drop-in for OpenAI function-calling, LangChain, or MCP.
 
-Repo: [github.com/Victor-Alves0/SIFT](https://github.com/Victor-Alves0/SIFT)
+```bash
+pip install sift-tools
+```
+
+Repo: [github.com/Victor-Alves0/SIFT](https://github.com/Victor-Alves0/SIFT) · PyPI: [sift-tools](https://pypi.org/project/sift-tools/)
 
 ```python
 from sift import Sift
