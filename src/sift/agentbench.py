@@ -2,7 +2,7 @@
 
 The flat condition is what most tool/MCP setups do today: every tool is dumped
 into the model's context as a function-calling spec. The SIFT condition exposes
-only the 3 meta-tools. Same model, same tasks, same catalogue — we vary the
+only the 2 meta-tools. Same model, same tasks, same catalogue — we vary the
 catalogue size with distractors (ToolMenuBench methodology) and measure success,
 token cost and tool-call accuracy.
 

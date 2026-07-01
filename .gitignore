@@ -3,17 +3,10 @@
 .env.local
 *.local
 
-# Go reference impl
-core/sift
-core/sift.exe
-*.test
-*.out
-
 # Python
 .venv/
 venv/
 env/
-embed-svc/.venv/
 __pycache__/
 *.py[cod]
 .fastembed_cache/

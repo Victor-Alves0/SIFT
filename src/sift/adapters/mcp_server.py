@@ -1,6 +1,6 @@
 """MCP server adapter — expose SIFT as a Model Context Protocol server.
 
-Any MCP client (Claude Desktop, IDEs, etc.) then sees just the 3 meta-tools and
+Any MCP client (Claude Desktop, IDEs, etc.) then sees just the 2 meta-tools and
 discovers your whole catalogue through them.
 
     from sift import Sift
@@ -18,14 +18,13 @@ def build_mcp_server(sift, name: str = "sift"):
     server = FastMCP(name)
 
     @server.tool()
-    def search_tools(q: str) -> str:
-        """Discover tools by natural language; returns candidate paths with scores."""
-        return sift.dispatch("search_tools", {"q": q})
-
-    @server.tool()
-    def get_tool_schema(path: str) -> str:
-        """Compact (TOON) schema of a hierarchy level. Empty path lists categories."""
-        return sift.dispatch("get_tool_schema", {"path": path})
+    def search_tools(domain: str = "", action: str = "", q: str = "", path: str = "") -> str:
+        """Find tools by need — matches come back with their schema inline. Preferred: an
+        active tool request via domain (platform/permission area) + action (operation +
+        target). Or pass q for a simple search, or path to browse (empty path lists
+        categories)."""
+        return sift.dispatch("search_tools", {"domain": domain, "action": action,
+                                              "q": q, "path": path})
 
     @server.tool()
     def execute_tool(path: str, params: dict | None = None) -> str:

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sift-tools"
-version = "0.1.0"
-description = "Hierarchical, search-first tool discovery for LLM agents. Give the model 3 meta-tools instead of a 30k-token catalog."
+version = "0.2.0"
+description = "Hierarchical, search-first tool discovery for LLM agents. Give the model 2 meta-tools instead of a 30k-token catalog."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

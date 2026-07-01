@@ -6,14 +6,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Hierarchical, search-first tool discovery for LLM agents.** Give the model
-**3 meta-tools** instead of a 30k-token catalogue — it discovers the rest by
+**2 meta-tools** instead of a 30k-token catalogue — it discovers the rest by
 navigating. Drop-in for OpenAI function-calling, LangChain, or MCP.
 
 ```bash
 pip install sift-tools
 ```
 
-Repo: [github.com/Victor-Alves0/SIFT](https://github.com/Victor-Alves0/SIFT) · PyPI: [sift-tools](https://pypi.org/project/sift-tools/)
+Repo: [github.com/Victor-Alves0/SIFT](https://github.com/Victor-Alves0/SIFT) · PyPI: [sift-tools](https://pypi.org/project/sift-tools/) · 📖 Full docs: [`docs/`](docs/README.md)
 
 ```python
 from sift import Sift
@@ -31,23 +31,40 @@ def gmail_read(q="is:unread", m=10):
 
 sift.build_index()
 
-sift.search_tools("read my last email")              # → ranked candidate paths
-sift.get_tool_schema("google_workspace.gmail.read")  # → compact TOON schema
+# discovery — the matching schema comes back inline, so you execute directly
+sift.search_request(domain="email", action="read the latest message")  # active request
+sift.search_tools("read my last email")                     # …or a simple query
 sift.execute_tool("google_workspace.gmail.read", {"m": 1})  # → run + filter
 ```
 
 ## Why
 
-The model never sees the whole catalogue — only 3 tools. It discovers what it
+The model never sees the whole catalogue — only 2 tools. It discovers what it
 needs by walking **category → service → function**. The system prompt stays a
 fixed ~200 tokens whether you have 5 tools or 5,000. Adding a tool is one
 decorator. Schemas are returned in **TOON** (one line per tool), and responses
 are **filtered** to a per-tool whitelist.
 
 ```
-search_tools(q)            → semantic discovery (local embeddings)   [Search]
-get_tool_schema(path)      → hierarchical navigation, TOON schema     [Inspect]
-execute_tool(path, params) → run + response filtering                 [Trigger + Filter]
+search_tools(...)          → discovery WITH schema inline (query, active         [Search + Inspect]
+                             request, or hierarchy browse — local embeddings)
+execute_tool(path, params) → run + response filtering                            [Trigger + Filter]
+```
+
+`search_tools` merges discovery and inspection: a match already carries its TOON
+schema, so the model calls `execute_tool` next — no separate "inspect" round-trip.
+
+### Active tool request (sharper discovery at scale)
+
+Beyond a raw query, the model can state a **structured intent** — `domain` (the
+platform / permission area) + `action` (the operation + target). A model-authored
+request aligns better with the tool docs than a user's raw phrasing, which lifts
+routing accuracy when the catalogue is large (the [MCP-Zero](https://arxiv.org/abs/2506.01056)
+finding). SIFT routes it in two stages (score the service on `domain`, the
+function on `action`, fuse) over its **hybrid** signals — not dense-only:
+
+```python
+sift.search_request(domain="calendar", action="create an event tomorrow at 3pm")
 ```
 
 ## Install
@@ -65,7 +82,7 @@ Swap in any embedder with an `embed(texts) -> list[vector]` method.
 ## Bring your own model (provider-agnostic)
 
 The core is **LLM-agnostic** — it never calls a model itself. It hands you the
-3 tool specs + a system prompt, and `sift.dispatch(name, args)` executes whatever
+2 tool specs + a system prompt, and `sift.dispatch(name, args)` executes whatever
 tool call your model emits. Wire it to any provider:
 
 ```python
@@ -91,7 +108,7 @@ agent_tools = sift.langchain_tools()        # plug into any LangChain agent
 sift.serve_mcp()
 
 # 5) Any other SDK — the universal primitive:
-specs  = sift.openai_tools()                # give your model the 3 tool specs
+specs  = sift.openai_tools()                # give your model the 2 tool specs
 system = sift.system_prompt
 answer = sift.dispatch(name, arguments)     # run a tool call -> string back
 ```
@@ -126,7 +143,7 @@ sift.tool_call_schema()   # JSON Schema -> Outlines / LM Format Enforcer / vLLM 
 sift.json_gbnf()          # GBNF grammar -> llama.cpp
 ```
 
-SIFT's tiny 3-tool surface actually *helps* weak models (less to get lost in).
+SIFT's tiny 2-tool surface actually *helps* weak models (less to get lost in).
 Realistic floor is ~1–3B params; sub-1B models (OPT-350M) can be interfaced but
 are too small to follow the format reliably.
 
@@ -162,7 +179,7 @@ sift.set_response("google_workspace.gmail.read", returns=["id", "subject", "from
 ```
 
 **Idle cost:** when a tool isn't used (the user just says "hi"), SIFT adds only the
-~480-token fixed surface (system prompt + 3 meta-tool specs) — **independent of
+~430-token fixed surface (system prompt + 2 meta-tool specs) — **independent of
 catalogue size**, and ~free across a conversation with prompt caching. A flat
 catalogue instead injects *every* schema each turn (~2.4k tokens at 25 tools,
 ~95k at 1,000).
@@ -199,8 +216,23 @@ system = sift.code_system_prompt
 sift.run_code("output = call('google_workspace.gmail.read', m=1)")
 ```
 
-The snippet runs in a constrained namespace (no imports/file/eval). It is not a
-hardened sandbox — use code mode with trusted catalogues.
+Execution goes through a **pluggable sandbox** backend:
+
+```python
+from sift.sandbox import InProcessSandbox, SubprocessSandbox
+
+Sift(sandbox=InProcessSandbox())                 # default — fast, trusted catalogues
+Sift(sandbox=SubprocessSandbox(timeout=10))      # isolated process for untrusted code
+```
+
+- **InProcessSandbox** (default): AST policy (no imports, dunders, `str.format`
+  escapes, or dangerous names) + a line budget + restricted builtins. Fast; for
+  catalogues you trust.
+- **SubprocessSandbox**: runs the snippet in a **separate process** — tool calls
+  are proxied back to the parent (the child can't touch your tools/memory), with a
+  wall-clock watchdog and CPU/memory rlimits (Unix). A big step up, but **not a
+  VM**: on its own it doesn't block network/filesystem syscalls. For fully
+  untrusted input, wrap it in OS isolation (container / seccomp).
 
 ## Evaluate
 
@@ -284,8 +316,18 @@ Set `SIFT_API_KEY` to require `Authorization: Bearer <key>`. Pass a `scope=` to
 `examples/serve_http.py` with your own `@sift.tool`s and importers.
 
 > OpenWebUI: add the server URL under Tools → OpenAPI tool server. (For MCP,
-> bridge via `mcpo` or OpenWebUI's MCP support.) The model then sees just the 3
+> bridge via `mcpo` or OpenWebUI's MCP support.) The model then sees just the 2
 > meta-tools and discovers your catalogue through them.
+
+## Documentation
+
+Full guides live in [`docs/`](docs/README.md):
+
+- [Getting started](docs/getting-started.md) · [Building tools](docs/building-tools.md)
+- [Discovery & retrieval](docs/discovery.md) · [Executing & filtering](docs/executing-and-filtering.md)
+- [Providers](docs/providers.md) · [Scoping](docs/scoping.md) · [Code mode & sandbox](docs/code-mode.md)
+- [Importing ecosystems](docs/importing.md) · [Deployment](docs/deployment.md)
+- [Architecture](docs/architecture.md) · [API reference](docs/api-reference.md)
 
 ## Repo layout
 
@@ -296,10 +338,11 @@ src/sift/            the Python library (the product)
   embeddings.py      local fastembed backend
   retrieval.py       BM25 + RRF (hybrid search)
   rerank.py          optional cross-encoder reranker
-  gateway.py         the 3 meta-tools + hybrid search + filtering + cache
+  gateway.py         the 2 meta-tools + hybrid search + active request + filtering
   scope.py           per-model allow/deny tool scoping (allowedTools)
   metatools.py       canonical tool specs + system prompt
-  codemode.py        run_code: orchestrate tools in one turn (hardened sandbox)
+  codemode.py        run_code: orchestrate tools in one turn
+  sandbox.py         pluggable code-mode backends (in-process / subprocess)
   constrain.py       JSON schema / GBNF for constrained decoders
   http_server.py     OpenAPI HTTP tool server (serve_http)
   adapters/          openai · anthropic · langchain · mcp_server · prompted
@@ -307,11 +350,11 @@ src/sift/            the Python library (the product)
   bench.py           filter-level metrics + token report
   agentbench.py      SIFT vs flat-catalogue benchmark
   evalsuite.py       BFCL-style function-call accuracy
+docs/                full guides (getting-started, building-tools, …)
 examples/            quickstart, live smokes, serve_http / serve_mcp
 tests/               pytest suite (offline, deterministic)
 .github/workflows/   CI (lint+test) and PyPI publish
 Dockerfile           containerized OpenAPI server
-core/   (reference)  a Go implementation of the same gateway (optional backend)
 ```
 
 ## License

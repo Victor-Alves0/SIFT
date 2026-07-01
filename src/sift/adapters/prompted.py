@@ -19,10 +19,11 @@ from typing import Callable
 
 PROMPTED_SYSTEM = """You solve the user's task using tools, by emitting JSON.
 
-You have 3 tools:
-- search_tools     args: {"q": "<what you need>"}   -> returns matching tool paths WITH their schema
-- get_tool_schema  args: {"path": "<'' | category | category.service>"}  -> browse (rarely needed)
-- execute_tool     args: {"path": "<category.service.function>", "params": {...}}  -> run a tool
+You have 2 tools:
+- search_tools   args: {"domain": "<platform/area>", "action": "<operation + target>"}  -> matching
+                 tool paths WITH their schema inline. This active request is the BEST form.
+                 (simple: {"q": "<what you need>"}; browse: {"path": "<'' | category | category.service>"})
+- execute_tool   args: {"path": "<category.service.function>", "params": {...}}  -> run a tool
 
 PROTOCOL — every reply MUST be exactly ONE JSON object and nothing else:
   to use a tool:        {"tool": "<name>", "args": {...}}

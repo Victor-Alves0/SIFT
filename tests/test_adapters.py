@@ -16,14 +16,14 @@ from sift.adapters.openai import run_agent as run_openai
 def test_openai_tool_specs(sift):
     specs = sift.openai_tools()
     names = {s["function"]["name"] for s in specs}
-    assert names == {"search_tools", "get_tool_schema", "execute_tool"}
+    assert names == {"search_tools", "execute_tool"}  # 2 meta-tools
     assert all(s["type"] == "function" for s in specs)
 
 
 def test_anthropic_tool_format(sift):
     tools = anthropic_tools(sift)
     names = {t["name"] for t in tools}
-    assert names == {"search_tools", "get_tool_schema", "execute_tool"}
+    assert names == {"search_tools", "execute_tool"}
     # Anthropic uses input_schema, not the OpenAI function wrapper
     for t in tools:
         assert "input_schema" in t

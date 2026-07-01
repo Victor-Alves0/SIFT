@@ -1,9 +1,12 @@
-"""The gateway: the 3 meta-tools the LLM actually sees.
+"""The gateway: the meta-tools the LLM actually sees.
 
-    search_tools(query)        -> semantic discovery               [Search]
-    get_tool_schema(path)      -> hierarchical navigation (TOON)    [Inspect]
-    execute_tool(path, params) -> run + response filtering          [Trigger + Filter]
+    search_tools(query | domain+action | path)  -> discovery + inspect  [Search·Inspect]
+    execute_tool(path, params)                   -> run + filter         [Trigger·Filter]
 
+``search_tools`` merges discovery and inspection: it returns matches with their
+TOON schema inline (semantic query, structured active request, or hierarchy
+browse via ``path``), so the model calls ``execute_tool`` directly. The internal
+``get_tool_schema`` powers the browse path and stays as a back-compat alias.
 The model never sees the full catalogue — it discovers tools by navigating.
 """
 from __future__ import annotations
@@ -108,12 +111,108 @@ class Gateway:
             results.append(SearchResult(e.path, e.kind, e.description, round(fused[i], 4)))
         return results
 
+    # ---------------------------- meta-tool: search (structured / active request)
+    def search_request(self, domain: str, action: str, top_k: int = 3, *,
+                       predicate=None) -> list[SearchResult]:
+        """Two-stage 'active tool request' routing (the MCP-Zero idea, on our
+        hybrid signals).
+
+        The model states its intent as two fields instead of one raw query —
+        ``domain`` (platform / permission area, e.g. "email", "google workspace")
+        and ``action`` (operation + target, e.g. "read the latest message"). A
+        model-authored request aligns better with tool docs than a user's raw
+        query, which is what lifts accuracy over query-only retrieval.
+
+        Stage 1 scores ``domain`` against services; stage 2 scores ``action``
+        against functions; the two are fused per MCP-Zero's rule
+        ``(s_server·s_tool)·max(s_server, s_tool)`` — but each ``s_*`` here is our
+        hybrid (embedding blended with normalised BM25), not dense-only.
+        """
+        if not self._entries:
+            raise RuntimeError("index not built — call build_index() first")
+        top_k = max(1, top_k)
+        domain = (domain or "").strip()
+        action = (action or "").strip()
+        if not action:  # nothing to route the operation on — fall back
+            return self.search_tools(domain, top_k, predicate=predicate) if domain else []
+        if not domain:  # no domain hint — plain semantic search on the action
+            return self.search_tools(action, top_k, predicate=predicate)
+
+        a_rel = self._relevance(action)
+        if self.min_score > 0 and (not a_rel or max(a_rel) < self.min_score):
+            return []
+        d_rel = self._relevance(domain)
+        svc_score = {e.path: d_rel[i] for i, e in enumerate(self._entries)
+                     if e.kind == "service"}
+
+        # If the domain hint resonates with no service, every function would tie
+        # at 0 and ordering would be arbitrary — a wrong (possibly risky) tool
+        # could surface on top. Degrade gracefully to ranking on the action alone
+        # (functions only, to match the normal request output).
+        if not svc_score or max(svc_score.values()) <= 0.0:
+            res = self.search_tools(action, top_k=max(top_k * 4, top_k), predicate=predicate)
+            fns = [r for r in res if r.kind == "function"]
+            return (fns or res)[:top_k]
+
+        scored: list[tuple[float, int]] = []
+        for i, e in enumerate(self._entries):
+            if e.kind != "function":
+                continue
+            if predicate is not None and not predicate(e.path):
+                continue
+            s_server = svc_score.get(e.path.rsplit(".", 1)[0], 0.0)
+            s_tool = a_rel[i]
+            scored.append(((s_server * s_tool) * max(s_server, s_tool), i))
+        scored.sort(key=lambda p: p[0], reverse=True)
+
+        # optional cross-encoder rerank over the fused shortlist (query = the action)
+        order = [i for _, i in scored]
+        if self.reranker is not None and order:
+            shortlist = order[: max(top_k * 4, 10)]
+            rr = self.reranker.rerank(action, [self._entries[i].text for i in shortlist])
+            order = [i for _, i in sorted(zip(rr, shortlist), key=lambda p: p[0], reverse=True)] \
+                + order[len(shortlist):]
+            fused_by_i = {i: s for s, i in scored}
+            scored = [(fused_by_i[i], i) for i in order]
+
+        results = []
+        for s, i in scored[:top_k]:
+            e = self._entries[i]
+            results.append(SearchResult(e.path, e.kind, e.description, round(s, 4)))
+        return results
+
+    def search_request_compact(self, domain: str, action: str, top_k: int = 3, *,
+                               predicate=None) -> str:
+        """TOON-rendered structured-request results (schema inline), like
+        ``search_compact`` but for the two-field active request."""
+        results = self.search_request(domain, action, top_k=top_k, predicate=predicate)
+        return self._render_compact(results, top_k)
+
+    def _relevance(self, query: str) -> list[float]:
+        """Per-entry relevance in [0, 1] for ``query`` — the hybrid signal used by
+        the multiplicative request-routing score (embedding cosine blended with
+        max-normalised BM25). Magnitudes matter here, so this does NOT use RRF."""
+        emb = bm = None
+        if self.retrieval in ("hybrid", "embedding"):
+            qv = self.embedder.embed([query])[0]
+            emb = [cosine(qv, v) for v in self._vectors]
+        if self.retrieval in ("hybrid", "bm25"):
+            raw = self._bm25.scores(query)
+            top = max(raw) if raw else 0.0
+            bm = [x / top for x in raw] if top > 0 else raw
+        if emb is not None and bm is not None:
+            return [(e + b) / 2 for e, b in zip(emb, bm)]
+        return emb if emb is not None else (bm or [])
+
     def search_compact(self, query: str, top_k: int = 3, *, predicate=None) -> str:
         """Agent-facing discovery: top function matches rendered as TOON, schema
         inline — so the model can call execute_tool directly (merges Search +
         Inspect). No scores/kind noise; capped to ``top_k`` lines.
         """
         results = self.search_tools(query, top_k=max(top_k * 4, top_k), predicate=predicate)
+        return self._render_compact(results, top_k)
+
+    def _render_compact(self, results: list[SearchResult], top_k: int) -> str:
         if not results:
             return "# no matching tools — none of the available tools fit this request."
         seen: set[str] = set()

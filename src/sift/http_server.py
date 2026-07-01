@@ -1,9 +1,9 @@
-"""OpenAPI HTTP server — expose SIFT's 3 meta-tools over REST.
+"""OpenAPI HTTP server — expose SIFT's 2 meta-tools over REST.
 
 Tool hubs like OpenWebUI consume an OpenAPI tool server: point them at this app's
 URL and they turn each operation into a tool the model can call. So the model
-gets exactly search_tools / get_tool_schema / execute_tool, and discovers your
-whole catalogue through them.
+gets exactly search_tools / execute_tool, and discovers your whole catalogue
+through them.
 
     from sift import Sift
     sift = Sift(); ...; sift.build_index()
@@ -24,12 +24,11 @@ from . import __version__
 
 
 class SearchReq(BaseModel):
-    q: str
+    domain: str = ""  # active request: platform / permission area
+    action: str = ""  # active request: operation + target
+    q: str = ""       # simple search: single natural-language need
+    path: str = ""    # browse this level instead of searching (empty = categories)
     top_k: int = 3
-
-
-class SchemaReq(BaseModel):
-    path: str = ""
 
 
 class ExecReq(BaseModel):
@@ -42,7 +41,7 @@ class Result(BaseModel):
 
 
 def build_app(sift, *, scope=None, title: str = "SIFT Tool Server") -> FastAPI:
-    """Build a FastAPI app exposing the 3 meta-tools. Returns the ASGI app."""
+    """Build a FastAPI app exposing the 2 meta-tools. Returns the ASGI app."""
     target = scope if scope is not None else sift
     api_key = os.getenv("SIFT_API_KEY")
 
@@ -62,14 +61,12 @@ def build_app(sift, *, scope=None, title: str = "SIFT Tool Server") -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/search_tools", response_model=Result, dependencies=[Depends(require_auth)],
-              summary="Find tools by need; returns the best matches WITH their schema inline.")
+              summary="Find tools via an active request (domain+action), a simple query (q), "
+                      "or browse the hierarchy (path). Schema comes inline.")
     def search_tools(req: SearchReq) -> Result:
-        return Result(result=target.dispatch("search_tools", {"q": req.q, "top_k": req.top_k}))
-
-    @app.post("/get_tool_schema", response_model=Result, dependencies=[Depends(require_auth)],
-              summary="Browse the hierarchy (empty path lists categories).")
-    def get_tool_schema(req: SchemaReq) -> Result:
-        return Result(result=target.dispatch("get_tool_schema", {"path": req.path}))
+        return Result(result=target.dispatch(
+            "search_tools", {"domain": req.domain, "action": req.action,
+                             "q": req.q, "path": req.path, "top_k": req.top_k}))
 
     @app.post("/execute_tool", response_model=Result, dependencies=[Depends(require_auth)],
               summary="Execute a tool by full path; returns the filtered result.")

@@ -55,6 +55,22 @@ def test_dispatch_search_returns_toon(sift):
     assert not out.lstrip().startswith("[")  # not a JSON list anymore
 
 
+def test_search_browse_categories(sift):
+    """search_tools with a path (no q) browses the hierarchy — folded get_tool_schema."""
+    out = sift.dispatch("search_tools", {"path": ""})
+    assert "google_workspace" in out and "local" in out
+
+
+def test_search_browse_service(sift):
+    out = sift.dispatch("search_tools", {"path": "google_workspace.gmail"})
+    assert "read" in out and "send" in out
+
+
+def test_get_tool_schema_alias_backcompat(sift):
+    out = sift.dispatch("get_tool_schema", {"path": ""})
+    assert "google_workspace" in out
+
+
 def test_dispatch_execute_filters(sift):
     out = sift.dispatch("execute_tool", {"path": "local.filesystem.read", "params": {"path": "/tmp/x"}})
     data = json.loads(out)

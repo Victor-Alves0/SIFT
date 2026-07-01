@@ -1,1 +1,1 @@
-"""Framework adapters: expose SIFT's 3 meta-tools to OpenAI, LangChain and MCP."""
+"""Framework adapters: expose SIFT's 2 meta-tools to OpenAI, LangChain and MCP."""

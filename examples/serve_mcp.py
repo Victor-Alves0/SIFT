@@ -5,8 +5,8 @@
 
 Requires the mcp extra:  pip install "sift-tools[mcp]"
 
-The MCP client sees only the 3 meta-tools (search_tools / get_tool_schema /
-execute_tool) and discovers your whole catalogue through them.
+The MCP client sees only the 2 meta-tools (search_tools / execute_tool) and
+discovers your whole catalogue through them.
 """
 import sys
 

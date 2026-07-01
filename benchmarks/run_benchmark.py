@@ -107,7 +107,7 @@ def main() -> None:
                   f"(likely too many tools in one request)", flush=True)
 
         all_stats.append(aggregate("flat (market baseline)", size, flat_runs))
-        all_stats.append(aggregate("SIFT (3 meta-tools)", size, sift_runs))
+        all_stats.append(aggregate("SIFT (2 meta-tools)", size, sift_runs))
 
     print("\n" + "=" * 104)
     print(f"{'catalog':>7} | {'condition':<24} | {'success':>7} | {'raw tok':>8} | "

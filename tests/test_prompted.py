@@ -52,7 +52,7 @@ def test_single_decision(sift):
 def test_constrain_helpers(sift):
     schema = sift.tool_call_schema()
     names = schema["oneOf"][0]["properties"]["tool"]["enum"]
-    assert set(names) == {"search_tools", "get_tool_schema", "execute_tool"}
+    assert set(names) == {"search_tools", "execute_tool"}
     gbnf = sift.json_gbnf()
     assert "root" in gbnf and "object" in gbnf
 

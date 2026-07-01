@@ -32,8 +32,13 @@ def test_execute_filters_response():
 
 def test_openapi_exposes_meta_tools():
     spec = _client().get("/openapi.json").json()
-    for path in ("/search_tools", "/get_tool_schema", "/execute_tool"):
-        assert path in spec["paths"]
+    assert "/search_tools" in spec["paths"] and "/execute_tool" in spec["paths"]
+    assert "/get_tool_schema" not in spec["paths"]  # folded into search_tools
+
+
+def test_search_browse_via_path():
+    body = _client().post("/search_tools", json={"path": ""}).json()["result"]
+    assert "mail" in body  # browsing the root lists categories
 
 
 def test_scope_limits_server():

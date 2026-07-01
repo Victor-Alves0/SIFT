@@ -1,4 +1,4 @@
-"""SIFT quickstart — register tools, build the index, exercise the 3 meta-tools.
+"""SIFT quickstart — register tools, build the index, exercise the 2 meta-tools.
 
 Run:  python examples/quickstart.py
 (First run downloads the local embedding model.)
@@ -45,8 +45,12 @@ def web_search(q, n=5):
 
 sift.build_index()
 
-print("== search_tools ==")
+print("== search_tools (simple query) ==")
 for r in sift.search_tools("read my last email", top_k=3):
+    print(f"  {r.score:.3f}  {r.path}")
+
+print("\n== search_request (active tool request: domain + action) ==")
+for r in sift.search_request("email", "read the latest message", top_k=3):
     print(f"  {r.score:.3f}  {r.path}")
 
 print("\n== get_tool_schema (TOON) ==")

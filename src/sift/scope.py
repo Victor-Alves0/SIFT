@@ -46,6 +46,12 @@ class SiftScope:
     def search_compact(self, q: str, top_k: int = 3) -> str:
         return self._sift.gateway.search_compact(q, top_k, predicate=self.allowed)
 
+    def search_request(self, domain: str, action: str, top_k: int = 3):
+        return self._sift.gateway.search_request(domain, action, top_k, predicate=self.allowed)
+
+    def search_request_compact(self, domain: str, action: str, top_k: int = 3) -> str:
+        return self._sift.gateway.search_request_compact(domain, action, top_k, predicate=self.allowed)
+
     def get_tool_schema(self, path: str) -> str:
         return self._sift.get_tool_schema(path)  # browse-only; execute stays enforced
 
@@ -56,20 +62,28 @@ class SiftScope:
 
     def run_code(self, code: str) -> str:
         # call()/search() inside the snippet route through THIS scope, so allow/deny
-        # is enforced even in code mode.
+        # is enforced even in code mode; uses the parent Sift's sandbox backend.
         from .codemode import run_code
-        return run_code(self, code)
+        return run_code(self, code, sandbox=self._sift._sandbox)
 
     def dispatch(self, name: str, arguments: dict | str) -> str:
         args = json.loads(arguments) if isinstance(arguments, str) else dict(arguments or {})
         try:
             if name == "search_tools":
-                return self.search_compact(args["q"], int(args.get("top_k", 3)))
+                top_k = int(args.get("top_k", 3))
+                domain = (args.get("domain") or "").strip()
+                action = (args.get("action") or "").strip()
+                if domain or action:
+                    return self.search_request_compact(domain, action, top_k)
+                q = (args.get("q") or "").strip()
+                if q:
+                    return self.search_compact(q, top_k)
+                return self._sift.get_tool_schema(args.get("path", "") or "")  # browse (read-only)
             if name == "execute_tool":
                 if not self.allowed(args.get("path", "")):
                     return json.dumps({"error": f"tool {args.get('path')!r} is not allowed in this scope"})
                 return self._sift.dispatch("execute_tool", args)
-            if name == "get_tool_schema":
+            if name == "get_tool_schema":  # deprecated alias
                 return self._sift.dispatch("get_tool_schema", args)
             if name == "run_code":
                 return self.run_code(args["code"])

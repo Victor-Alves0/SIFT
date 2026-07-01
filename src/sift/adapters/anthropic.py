@@ -17,7 +17,7 @@ from typing import Any
 
 
 def anthropic_tools(sift) -> list[dict]:
-    """The 3 meta-tools in Anthropic's tool format."""
+    """The 2 meta-tools in Anthropic's tool format."""
     out = []
     for spec in sift.openai_tools():
         fn = spec["function"]

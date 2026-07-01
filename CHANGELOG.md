@@ -3,14 +3,39 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
-## [0.1.0] — unreleased
+## [0.2.0] — unreleased
 
-Initial release.
+### Changed
+- **Two meta-tools instead of three.** `get_tool_schema` is folded into
+  `search_tools` (matches already come back with their schema inline; browse the
+  hierarchy via `search_tools(path=...)`). Smaller surface, one fewer decision
+  per turn, lower idle cost (~480 → ~430 tokens). `get_tool_schema` stays as a
+  back-compat alias in `dispatch` and as a facade/gateway method.
+
+### Added
+- **Active tool request** (`search_request(domain, action)` / the `domain` +
+  `action` fields on `search_tools`): a structured, model-authored intent that
+  aligns better with tool docs than a raw query. Routed in two stages (service on
+  `domain`, function on `action`) and fused with MCP-Zero's
+  `(s_server·s_tool)·max(s_server, s_tool)` — over SIFT's **hybrid** signals
+  (local embeddings + BM25), not dense-only. Enforced through scopes too.
+- **Pluggable code-mode sandbox** (`Sift(sandbox=...)`): `InProcessSandbox`
+  (default) and `SubprocessSandbox` — isolated process, tool calls proxied to the
+  parent, wall-clock watchdog, and CPU/memory rlimits (Unix).
+
+### Fixed
+- LangChain adapter now exposes the 2-tool surface (was still exporting the
+  removed `get_tool_schema` tool) and its `search_tools` supports query, browse,
+  and the active request.
+
+## [0.1.0] — 2026
+
+Initial release (published to PyPI as `sift-tools`).
 
 ### Core
 - Hierarchical tool registry (category → service → function) with TOON schema codec.
-- Three meta-tools (`search_tools`, `get_tool_schema`, `execute_tool`); merged
-  search+inspect (schema returned inline) so the model executes directly.
+- Meta-tools with merged search+inspect (schema returned inline) so the model
+  executes directly.
 - Hybrid retrieval (embeddings + BM25 + RRF), optional cross-encoder reranker,
   relevance floor (`min_score`) with an explicit "no matching tools" reply.
 - Response projection: per-tool field whitelist (`returns`) and/or `transform`,

@@ -1,6 +1,6 @@
 """SIFT — Search · Inspect · Filter · Trigger.
 
-Hierarchical, search-first tool discovery for LLM agents. Give the model 3
+Hierarchical, search-first tool discovery for LLM agents. Give the model 2
 meta-tools instead of a 30k-token catalogue; it discovers the rest by navigating.
 
 Quickstart::
@@ -19,8 +19,9 @@ Quickstart::
 
     sift.build_index()
 
-    sift.search_tools("read my last email")      # discovery
-    sift.get_tool_schema("google_workspace.gmail.read")  # TOON schema
+    # discovery — schema comes back inline, so you can execute directly
+    sift.search_request(domain="email", action="read the latest message")  # active request
+    sift.search_tools("read my last email")                     # or a simple query
     sift.execute_tool("google_workspace.gmail.read", {"m": 1})  # run + filter
 
     # Plug into any stack:
@@ -38,7 +39,7 @@ from .metatools import META_TOOL_NAMES, SYSTEM_PROMPT, tool_specs
 from .registry import Registry, ToolDef
 
 __all__ = ["Sift", "Registry", "ToolDef", "SearchResult", "SYSTEM_PROMPT", "tool_specs"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 class Sift:
@@ -46,13 +47,14 @@ class Sift:
 
     def __init__(self, *, registry: Registry | None = None, embedder=None,
                  model_name: str | None = None, retrieval: str = "hybrid",
-                 reranker=None, min_score: float = 0.0) -> None:
+                 reranker=None, min_score: float = 0.0, sandbox=None) -> None:
         self.registry = registry or Registry()
         self._embedder = embedder
         self._model_name = model_name
         self._retrieval = retrieval
         self._reranker = reranker
         self._min_score = min_score
+        self._sandbox = sandbox  # code-mode backend (default: in-process)
         self._gateway: Gateway | None = None
 
     # ----------------------------------------------------------- registration
@@ -110,6 +112,11 @@ class Sift:
     def search_tools(self, q: str, top_k: int = 5) -> list[SearchResult]:
         return self.gateway.search_tools(q, top_k)
 
+    def search_request(self, domain: str, action: str, top_k: int = 3) -> list[SearchResult]:
+        """Active tool request: route a structured intent (``domain`` + ``action``)
+        instead of a raw query — sharper alignment, higher accuracy at scale."""
+        return self.gateway.search_request(domain, action, top_k)
+
     def get_tool_schema(self, path: str) -> str:
         return self.gateway.get_tool_schema(path)
 
@@ -120,16 +127,23 @@ class Sift:
         """Run a meta-tool call by name; returns a string (TOON or JSON).
 
         Handy as the single entry point when wiring SIFT into an LLM loop.
-        Handles the 3 meta-tools plus ``run_code`` (code mode).
+        Handles the 2 meta-tools plus ``run_code`` (code mode).
         """
         args = json.loads(arguments) if isinstance(arguments, str) else dict(arguments or {})
         try:
             if name == "search_tools":
-                # compact TOON with schema inline — lets the model execute directly
-                return self.gateway.search_compact(args["q"], int(args.get("top_k", 3)))
+                top_k = int(args.get("top_k", 3))
+                domain = (args.get("domain") or "").strip()
+                action = (args.get("action") or "").strip()
+                if domain or action:  # active tool request — structured intent
+                    return self.gateway.search_request_compact(domain, action, top_k)
+                q = (args.get("q") or "").strip()
+                if q:  # semantic discovery — compact TOON with schema inline
+                    return self.gateway.search_compact(q, top_k)
+                return self.gateway.get_tool_schema(args.get("path", "") or "")  # browse
             if name == "run_code":
                 return self.run_code(args["code"])
-            if name == "get_tool_schema":
+            if name == "get_tool_schema":  # deprecated alias — folded into search_tools
                 return self.get_tool_schema(args.get("path", ""))
             if name == "execute_tool":
                 res = self.execute_tool(args["path"], args.get("params") or {})
@@ -140,7 +154,7 @@ class Sift:
 
     # --------------------------------------------------------------- adapters
     def openai_tools(self) -> list[dict]:
-        """OpenAI/OpenRouter function-calling specs for the 3 meta-tools."""
+        """OpenAI/OpenRouter function-calling specs for the 2 meta-tools."""
         return tool_specs()
 
     @property
@@ -159,7 +173,7 @@ class Sift:
 
     def run_code(self, code: str) -> str:
         from .codemode import run_code
-        return run_code(self, code)
+        return run_code(self, code, sandbox=self._sandbox)
 
     @property
     def meta_tool_names(self) -> tuple[str, ...]:
@@ -170,7 +184,7 @@ class Sift:
         return langchain_tools(self)
 
     def anthropic_tools(self) -> list[dict]:
-        """The 3 meta-tools in the native Anthropic (Messages API) tool format."""
+        """The 2 meta-tools in the native Anthropic (Messages API) tool format."""
         from .adapters.anthropic import anthropic_tools
         return anthropic_tools(self)
 
@@ -190,13 +204,13 @@ class Sift:
         return build_mcp_server(self, name=name)
 
     def serve_http(self, *, host: str = "127.0.0.1", port: int = 8000, scope=None) -> None:
-        """Run an OpenAPI HTTP server exposing the 3 meta-tools (OpenWebUI tool
+        """Run an OpenAPI HTTP server exposing the 2 meta-tools (OpenWebUI tool
         server, REST clients). Requires the ``server`` extra."""
         from .http_server import serve_http
         serve_http(self, host=host, port=port, scope=scope)
 
     def serve_mcp(self, name: str = "sift", transport: str = "stdio") -> None:
-        """Run SIFT as an MCP server exposing the 3 meta-tools.
+        """Run SIFT as an MCP server exposing the 2 meta-tools.
 
         transport: "stdio" (default; Claude Desktop, local clients) or "sse" /
         "streamable-http" (remote clients, OpenWebUI). HTTP host/port are taken

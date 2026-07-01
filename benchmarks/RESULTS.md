@@ -1,6 +1,6 @@
 # SIFT benchmark — SIFT vs the flat-catalogue baseline
 
-**Question:** what does hierarchical, search-first discovery (SIFT, 3 meta-tools)
+**Question:** what does hierarchical, search-first discovery (SIFT, 2 meta-tools)
 buy you over the approach most tool/MCP setups use today — every tool dumped into
 the model's context as function-calling specs?
 
