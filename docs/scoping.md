@@ -38,10 +38,19 @@ nor run a tool outside its scope, in every mode:
 ```python
 view.dispatch("search_tools", {"q": "delete a contact"})   # deny'd tools never appear
 view.dispatch("search_tools", {"domain": "crm", "action": "remove a contact"})  # same
+view.dispatch("search_tools", {"path": "crm.contacts"})    # browse: denied tools hidden too
 view.execute_tool("crm.contacts.delete", {})               # → PermissionError
 view.dispatch("execute_tool", {"path": "crm.contacts.delete"})  # → {"error": "...not allowed..."}
 view.run_code("output = call('crm.contacts.delete')")      # allow/deny applies inside code too
 ```
+
+Browsing the hierarchy is scoped as well: a denied function never appears in a
+service listing, its direct path returns an error instead of a schema, and a
+category/service whose tools are *all* denied is omitted from listings entirely —
+denial means no disclosure, not just no execution. (One nuance: synthesized
+category/service descriptions are built from all children at registration time,
+so give sensitive nodes an explicit `describe(...)` if even description text
+must not hint at hidden tools.)
 
 ## Wiring a scope into a model
 

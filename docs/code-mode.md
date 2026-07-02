@@ -54,10 +54,15 @@ Runs the snippet in-process behind a static + dynamic policy:
 
 - **AST guard** rejects, before running: `import`, dunder/private attribute access
   (`__class__`, `_foo`), dangerous names (`eval`, `exec`, `open`, `getattr`, …),
-  and the `str.format`/`format_map` escape.
-- **Line budget** via `sys.settrace` caps executed lines (kills infinite loops
-  that the AST can't see).
+  class definitions, and the `str.format`/`format_map` escape.
+- **Line budget** via `sys.settrace` caps executed lines of the *snippet* (kills
+  infinite loops the AST can't see; lines run inside real tool implementations
+  are neither counted nor traced).
 - **Restricted builtins** — only a safe subset is exposed.
+
+Known in-process gap: a single-expression memory bomb (e.g. `'a' * 10**9`) is one
+"line" and allocates before any guard fires — another reason to use the
+subprocess backend (with `memory_mb`) for anything you don't fully trust.
 
 Fast, no process overhead. Use it for **catalogues you trust** (your own tools).
 It raises the bar but shares your process, so treat it as a guardrail, not a jail.

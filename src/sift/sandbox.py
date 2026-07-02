@@ -58,6 +58,11 @@ class _Guard(ast.NodeVisitor):
 
     visit_ImportFrom = visit_Import
 
+    def visit_ClassDef(self, node):  # noqa: N802
+        # would fail at runtime anyway (__build_class__ is not exposed), but a
+        # policy error beats a cryptic NameError
+        raise SandboxError("class definitions are not allowed in code mode")
+
     def visit_Attribute(self, node):  # noqa: N802
         if node.attr.startswith("_") or node.attr in _BLOCKED_ATTRS:
             raise SandboxError(f"access to attribute {node.attr!r} is not allowed")
@@ -83,6 +88,12 @@ def _line_limiter(max_lines: int):
     count = [0]
 
     def tracer(frame, event, arg):
+        # Budget the SNIPPET only: frames from real tool implementations (any
+        # other filename) are neither counted nor locally traced — a heavy but
+        # legitimate tool must not exhaust the snippet's budget (or pay tracing
+        # overhead on every line it runs).
+        if frame.f_code.co_filename != "<sift-code>":
+            return None
         if event == "line":
             count[0] += 1
             if count[0] > max_lines:

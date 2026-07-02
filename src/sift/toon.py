@@ -41,18 +41,27 @@ def encode_function(tool: ToolDef) -> str:
     return "|".join(parts)
 
 
-def encode_service(reg: Registry, service_path: str) -> str:
+def encode_service(reg: Registry, service_path: str, *, predicate=None) -> str:
     fns = reg.functions(service_path)
+    if predicate is not None:
+        fns = {name: t for name, t in fns.items() if predicate(t.path)}
     return "\n".join(encode_function(fns[name]) for name in sorted(fns))
 
 
-def encode_category(reg: Registry, category: str) -> str:
+def encode_category(reg: Registry, category: str, *, predicate=None) -> str:
     svcs = reg.services(category)
+    if predicate is not None:  # keep only services with at least one visible tool
+        visible = {t.parts[1] for t in reg.tools()
+                   if t.parts[0] == category and predicate(t.path)}
+        svcs = {name: desc for name, desc in svcs.items() if name in visible}
     return "\n".join(f"{category}.{name}|{_clean(desc)}" for name, desc in sorted(svcs.items()))
 
 
-def encode_categories(reg: Registry) -> str:
+def encode_categories(reg: Registry, *, predicate=None) -> str:
     cats = reg.categories()
+    if predicate is not None:  # keep only categories with at least one visible tool
+        visible = {t.parts[0] for t in reg.tools() if predicate(t.path)}
+        cats = {name: desc for name, desc in cats.items() if name in visible}
     return "\n".join(f"{name}|{_clean(desc)}" for name, desc in sorted(cats.items()))
 
 

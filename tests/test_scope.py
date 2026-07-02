@@ -78,3 +78,31 @@ def test_scope_allow_risky_false_blocks_risky():
     assert not v.allowed("google_workspace.gmail.send")  # risk=True
     with pytest.raises(PermissionError):
         v.execute_tool("google_workspace.gmail.send", {"to": "x"})
+
+
+# ---- browse must not disclose denied tools (information leak) ----
+
+def test_scope_browse_hides_denied_function():
+    v = _sift().scope(deny=["*.send"])
+    listing = v.dispatch("search_tools", {"path": "google_workspace.gmail"})
+    assert "google_workspace.gmail.read" in listing
+    assert "send" not in listing            # schema of the denied tool is not shown
+
+
+def test_scope_browse_hides_empty_category():
+    v = _sift().scope(allow=["web.*"])
+    cats = v.dispatch("search_tools", {"path": ""})
+    assert "web" in cats
+    assert "google_workspace" not in cats   # no visible tool -> category hidden
+
+
+def test_scope_browse_denied_leaf_is_error():
+    v = _sift().scope(deny=["*.send"])
+    out = json.loads(v.dispatch("search_tools", {"path": "google_workspace.gmail.send"}))
+    assert "error" in out and "not visible" in out["error"]
+
+
+def test_scope_deprecated_alias_is_scoped_too():
+    v = _sift().scope(deny=["*.send"])
+    listing = v.dispatch("get_tool_schema", {"path": "google_workspace.gmail"})
+    assert "send" not in listing

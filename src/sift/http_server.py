@@ -16,6 +16,7 @@ Requires the server extra:  pip install "sift-tools[server]"
 from __future__ import annotations
 
 import os
+import secrets
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -46,7 +47,8 @@ def build_app(sift, *, scope=None, title: str = "SIFT Tool Server") -> FastAPI:
     api_key = os.getenv("SIFT_API_KEY")
 
     def require_auth(authorization: str | None = Header(default=None)) -> None:
-        if api_key and authorization != f"Bearer {api_key}":
+        # constant-time comparison — a plain != leaks key length/prefix via timing
+        if api_key and not secrets.compare_digest(authorization or "", f"Bearer {api_key}"):
             raise HTTPException(status_code=401, detail="invalid or missing API key")
 
     app = FastAPI(

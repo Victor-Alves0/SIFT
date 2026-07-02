@@ -226,14 +226,15 @@ class Registry:
                     SearchEntry(svc_path, "service", svc_desc, f"{cat} {svc}: {svc_desc}. {cat_desc}")
                 )
                 for fn_name, tool in sorted(self.functions(svc_path).items()):
-                    entries.append(
-                        SearchEntry(
-                            tool.path,
-                            "function",
-                            tool.description,
-                            f"{cat} {svc} {fn_name}: {tool.description}",
-                        )
-                    )
+                    # index param names/descriptions too — "max results", "recipient
+                    # address" etc. carry retrieval signal the description alone lacks
+                    param_text = " ".join(
+                        f"{p.name} {p.desc}".strip() for p in tool.params.values()
+                    ).strip()
+                    text = f"{cat} {svc} {fn_name}: {tool.description}"
+                    if param_text:
+                        text += f" ({param_text})"
+                    entries.append(SearchEntry(tool.path, "function", tool.description, text))
         return entries
 
     # ----------------------------------------------------------------- schema

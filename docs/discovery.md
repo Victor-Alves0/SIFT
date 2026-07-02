@@ -131,6 +131,11 @@ sift = Sift(min_score=0.3)   # cosine floor; tune per embedding model
 With an embedder the floor is a calibrated cosine in `[0, 1]`; with `bm25` only,
 the floor becomes "at least one query term matched".
 
+> **Scale caveat:** the floor is compared against different signals per mode — in
+> `search_tools` it's the max embedding cosine; in `search_request` it's the max
+> hybrid blend (cosine + normalised BM25)/2. A threshold tuned on one mode does
+> not transfer 1:1 to the other; tune against the mode you actually use.
+
 ## Tuning checklist
 
 - **Wrong tool chosen?** Improve `description`s and category/service names; prefer

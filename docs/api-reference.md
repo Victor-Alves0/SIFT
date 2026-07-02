@@ -38,7 +38,7 @@ Sift(*, registry=None, embedder=None, model_name=None, retrieval="hybrid",
 | `search_tools(q, top_k=5)` | `list[SearchResult]` | simple query search |
 | `search_request(domain, action, top_k=3)` | `list[SearchResult]` | active tool request (two-stage routing) |
 | `get_tool_schema(path)` | `str` (TOON) | browse a level (`""` → categories) |
-| `execute_tool(path, params=None)` | `dict` | run + project |
+| `execute_tool(path, params=None)` | `dict` | run + project; args coerced to declared types (`integer`/`number`/`boolean`/`array`/`object`) |
 | `dispatch(name, arguments)` | `str` | run any meta-tool call; errors returned as `{"error": ...}` |
 
 `dispatch` handles `search_tools` (active request `domain`/`action` → query `q` →

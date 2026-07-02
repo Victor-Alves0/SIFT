@@ -56,3 +56,31 @@ def test_run_code_blocks_str_format_escape(sift):
 def test_dispatch_run_code(sift):
     out = json.loads(sift.dispatch("run_code", {"code": "output = call('local.filesystem.read', path='/x')"}))
     assert out["output"]["path"] == "/x"
+
+
+def test_run_code_blocks_class_definitions(sift):
+    # a clear policy error, not a cryptic NameError: __build_class__
+    out = json.loads(sift.run_code("class A: pass\noutput = 1"))
+    assert "error" in out and "class" in out["error"].lower()
+
+
+def test_line_budget_ignores_tool_internals():
+    """A heavy-but-legitimate tool must not exhaust the SNIPPET's line budget:
+    only <sift-code> frames are counted (and tool frames aren't traced at all)."""
+    import json as _json
+
+    from sift import Sift
+    from sift.sandbox import InProcessSandbox
+
+    s = Sift(retrieval="bm25", sandbox=InProcessSandbox(max_lines=50))
+
+    @s.tool("heavy.compute.run", description="Heavy computation", params={}, returns=["n"])
+    def _heavy():
+        n = 0
+        for _ in range(5000):   # ~10k traced lines if tool frames counted
+            n += 1
+        return {"n": n}
+
+    s.build_index()
+    out = _json.loads(s.run_code("output = call('heavy.compute.run')['n']"))
+    assert out.get("output") == 5000, out   # would blow the 50-line budget before the fix

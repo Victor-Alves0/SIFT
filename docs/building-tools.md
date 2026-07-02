@@ -57,7 +57,8 @@ The wrapped function must **return a `dict`** (a `TypeError` is raised otherwise
 
 `"<type>:<req>:<default>:<description>"`
 
-- **type** — `string`, `number`, … (free text; `number` is coerced to `float`).
+- **type** — `string`, `number`, `integer`, `boolean`, `array`, `object` (see the
+  coercion table below).
 - **req** — `n` = required, `o` = optional.
 - **default** — used when the param is omitted (optional params only).
 - **description** — free text; may contain colons (it's the last field).
@@ -88,6 +89,27 @@ params={
 Keys: `type`, `required` (bool), `default`, `desc` (or `description`). TOON quotes
 colon-bearing defaults so the one-line schema stays unambiguous
 (`q:string:o:'is:unread'`).
+
+### Type coercion at the LLM boundary
+
+Models routinely send every argument as a string (`"3"`, `"false"`, `"[1,2]"`),
+so SIFT coerces values to the declared type before your function sees them:
+
+| declared type | coercion |
+|---|---|
+| `string` | passed through |
+| `integer` (`int`) | → `int` (`"7"` → `7`, `7.9` → `7`) |
+| `number` (`float`) | → `float`, but **integral values stay `int`** (`"3"` → `3`, `"3.5"` → `3.5`) — so slicing/pagination with the value works |
+| `boolean` (`bool`) | `"true"/"1"/"yes"/"on"` → `True`; `"false"/"0"/"no"/"off"/""` → `False` |
+| `array` / `object` | JSON strings are parsed (`"[1,2]"` → `[1, 2]`); native values pass through |
+
+Unparseable values pass through unchanged — your tool sees the raw value and can
+raise its own, more specific error.
+
+**Missing vs empty.** Only an *absent* or `None` argument counts as missing (a
+required one raises `ValueError`; an optional one gets its default). An explicit
+`""` is a real value — a model can override a non-empty default with an empty
+string.
 
 ## `returns` — response projection (a whitelist)
 

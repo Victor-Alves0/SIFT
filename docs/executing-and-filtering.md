@@ -14,9 +14,11 @@ Steps SIFT performs:
 
 1. Look up the tool by full path (`KeyError` if it isn't a function path).
 2. **Prepare arguments** against the declared params:
-   - required param missing/empty → `ValueError`;
-   - optional param omitted → its default is used (if declared);
-   - `number` params are coerced to `float`.
+   - required param absent or `None` → `ValueError` (an explicit `""` is a value);
+   - optional param absent/`None` → its default is used (if declared);
+   - values are **coerced to the declared type** — `integer`/`number` (integral
+     values stay `int`), `boolean` (`"false"` → `False`), `array`/`object` (JSON
+     strings parsed). See [Building tools](building-tools.md#type-coercion-at-the-llm-boundary).
    Only declared params are passed through — unknown keys are ignored.
 3. Call your function (`RuntimeError` if no executor is bound — e.g. a
    JSON/imported tool with no function attached).

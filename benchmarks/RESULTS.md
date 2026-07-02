@@ -35,6 +35,25 @@ the model's context as function-calling specs?
 4. **Tail risk.** One flat task at 250 tools blew up to **152,231 tokens** (the model
    thrashing in a huge context); SIFT on the same task used 5,710.
 
+## Active tool request A/B (raw query vs domain+action)
+
+Top-1 routing accuracy on a 17-tool multi-domain catalogue with deliberate verb
+collisions (read/list/send/delete across gmail, calendar, drive, slack, crm,
+jira), hybrid retrieval, 14 cases:
+
+| discovery form | top-1 |
+|---|---:|
+| query-only — `search_tools(raw_user_query)` | 9/14 = **64%** |
+| active request — `search_request(domain, action)` | 14/14 = **100%** |
+
+The structured request fixed 5 ambiguous cases (e.g. "what's on my agenda" landed
+on the calendar *service* instead of `calendar.list`; "remove that ticket" hit
+`jira.issues.create` instead of `.delete`). Matches the MCP-Zero paper's finding
+that query-only retrieval plateaus at ~65–72%. Caveat: small, author-constructed
+catalogue — directional evidence, not an independent benchmark.
+
+Reproduce (offline): `python benchmarks/ab_active_request.py`
+
 ## Directional comparison to ToolMenuBench (market reference)
 
 | approach | success | tokens |

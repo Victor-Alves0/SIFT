@@ -1,8 +1,11 @@
 """OpenAPI HTTP tool server."""
-from fastapi.testclient import TestClient
+import pytest
 
-from sift import Sift
-from sift.http_server import build_app
+pytest.importorskip("fastapi", reason="requires the 'server' extra")
+from fastapi.testclient import TestClient  # noqa: E402
+
+from sift import Sift  # noqa: E402
+from sift.http_server import build_app  # noqa: E402
 
 
 def _client(**kwargs) -> TestClient:

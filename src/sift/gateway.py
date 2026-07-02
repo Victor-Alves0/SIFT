@@ -11,6 +11,7 @@ The model never sees the full catalogue — it discovers tools by navigating.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from . import toon
@@ -42,7 +43,12 @@ class Gateway:
         self.embedder = embedder
         self.retrieval = retrieval
         self.reranker = reranker  # object with .rerank(query, docs) -> list[float]
-        self.min_score = min_score  # relevance floor; below it, search returns nothing
+        # Relevance floor; below it, search returns nothing. NOTE the scale differs
+        # by mode: in search_tools it's the max embedding cosine (or "any BM25 hit"
+        # when bm25-only); in search_request it's the max hybrid blend from
+        # _relevance ((cosine + normalised BM25)/2). A threshold tuned for one
+        # mode does not transfer to the other.
+        self.min_score = min_score
         self._entries: list = []
         self._vectors: list = []
         self._bm25: BM25 | None = None
@@ -150,7 +156,7 @@ class Gateway:
         # could surface on top. Degrade gracefully to ranking on the action alone
         # (functions only, to match the normal request output).
         if not svc_score or max(svc_score.values()) <= 0.0:
-            res = self.search_tools(action, top_k=max(top_k * 4, top_k), predicate=predicate)
+            res = self.search_tools(action, top_k=top_k * 4, predicate=predicate)
             fns = [r for r in res if r.kind == "function"]
             return (fns or res)[:top_k]
 
@@ -209,7 +215,7 @@ class Gateway:
         inline — so the model can call execute_tool directly (merges Search +
         Inspect). No scores/kind noise; capped to ``top_k`` lines.
         """
-        results = self.search_tools(query, top_k=max(top_k * 4, top_k), predicate=predicate)
+        results = self.search_tools(query, top_k=top_k * 4, predicate=predicate)
         return self._render_compact(results, top_k)
 
     def _render_compact(self, results: list[SearchResult], top_k: int) -> str:
@@ -229,27 +235,41 @@ class Gateway:
         return "# matches — call execute_tool with one of these paths (schema inline):\n" + "\n".join(lines)
 
     # --------------------------------------------------- meta-tool: inspect
-    def get_tool_schema(self, path: str) -> str:
-        """Return a TOON view of the level (what the agent reads)."""
+    def get_tool_schema(self, path: str, *, predicate=None) -> str:
+        """Return a TOON view of the level (what the agent reads).
+
+        ``predicate`` scopes the browse: nodes whose tools it rejects are omitted
+        entirely (a scoped model must not even see denied schemas). Predicated
+        views bypass the cache, which only holds the unscoped rendering.
+        """
         path = path.strip(". ")
-        if path in self._toon_cache:
+        if predicate is None and path in self._toon_cache:
             return self._toon_cache[path]
 
         depth = -1 if path == "" else path.count(".")
         if depth == -1:
-            out = "# categories (call get_tool_schema on a path to drill in)\n" + toon.encode_categories(self.reg)
+            out = ("# categories (browse deeper with search_tools(path=...))\n"
+                   + toon.encode_categories(self.reg, predicate=predicate))
         elif depth == 0:
             self.reg.services(path)  # validates / raises
-            out = f"# services of {path}\n" + toon.encode_category(self.reg, path)
+            out = f"# services of {path}\n" + toon.encode_category(self.reg, path, predicate=predicate)
         elif depth == 1:
             self.reg.functions(path)  # validates / raises
             out = (f"# functions of {path} (path|desc|param:type:req[:default]|r:fields[|risk])\n"
-                   + toon.encode_service(self.reg, path))
+                   + toon.encode_service(self.reg, path, predicate=predicate))
         else:
+            if predicate is not None and not predicate(path):
+                raise PermissionError(f"tool {path!r} is not visible in this scope")
             out = toon.encode_function(self.reg.tool(path))
 
-        self._toon_cache[path] = out
+        if predicate is None:
+            self._toon_cache[path] = out
         return out
+
+    def invalidate_schema_cache(self) -> None:
+        """Drop cached TOON renderings — call after mutating a registered tool
+        (e.g. ``set_response``) so stale schemas aren't served."""
+        self._toon_cache.clear()
 
     def schema_dict(self, path: str) -> dict:
         """Structured view (for adapters that want JSON, not TOON)."""
@@ -276,21 +296,58 @@ class Gateway:
     def _prepare_args(spec: dict[str, Param], params: dict) -> dict:
         out: dict = {}
         for name, p in spec.items():
-            val = params.get(name)
-            if val in (None, ""):
+            # only absence/None means "missing" — an explicit "" is a real value
+            # (so a model can override a non-empty default with an empty string)
+            if name not in params or params[name] is None:
                 if p.required:
                     raise ValueError(f"missing required parameter {name!r} ({p.desc})")
                 if p.default != "":
                     out[name] = _coerce(p.type, p.default)
                 continue
-            out[name] = _coerce(p.type, val)
+            out[name] = _coerce(p.type, params[name])
         return out
 
 
+_TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
+_FALSE_STRINGS = frozenset({"false", "0", "no", "off", ""})
+
+
 def _coerce(typ: str, value):
-    if typ == "number":
+    """Coerce a value from the LLM boundary to the declared param type.
+
+    Models routinely send everything as strings ("3", "false", "[1,2]"), so each
+    type accepts its string form. Unparseable values pass through unchanged —
+    the tool sees them and can raise its own, more specific error.
+    """
+    typ = (typ or "").lower()
+    if typ in ("integer", "int"):
         try:
-            return float(value)
+            return int(float(value))
         except (TypeError, ValueError):
             return value
+    if typ in ("number", "float"):
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return value
+        # keep integral numbers as int: tools slice/paginate/index with these,
+        # and float(3) would break them (ints still work wherever floats do)
+        return int(f) if f.is_integer() else f
+    if typ in ("boolean", "bool"):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in _TRUE_STRINGS:
+                return True
+            if v in _FALSE_STRINGS:
+                return False
+        return bool(value)
+    if typ in ("array", "object", "list", "dict"):
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return value
+        return value
     return value

@@ -39,7 +39,7 @@ from .metatools import META_TOOL_NAMES, SYSTEM_PROMPT, tool_specs
 from .registry import Registry, ToolDef
 
 __all__ = ["Sift", "Registry", "ToolDef", "SearchResult", "SYSTEM_PROMPT", "tool_specs"]
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 class Sift:
@@ -75,6 +75,7 @@ class Sift:
 
     def describe(self, node_path: str, description: str) -> "Sift":
         self.registry.describe(node_path, description)
+        self._drop_schema_cache()
         return self
 
     def set_response(self, path: str, *, returns: list[str] | None = None,
@@ -82,7 +83,12 @@ class Sift:
         """Trim what a tool returns to the model — a field whitelist and/or a
         reshaping transform. Works on imported (MCP/OpenAPI) tools too."""
         self.registry.set_response(path, returns=returns, transform=transform)
+        self._drop_schema_cache()  # a cached TOON line would show the old whitelist
         return self
+
+    def _drop_schema_cache(self) -> None:
+        if self._gateway is not None:
+            self._gateway.invalidate_schema_cache()
 
     def scope(self, *, allow: list[str] | None = None, deny: list[str] | None = None,
               allow_risky: bool = True):

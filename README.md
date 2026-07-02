@@ -67,6 +67,43 @@ function on `action`, fuse) over its **hybrid** signals — not dense-only:
 sift.search_request(domain="calendar", action="create an event tomorrow at 3pm")
 ```
 
+## Benchmarks
+
+**SIFT vs the flat catalogue** (what most tool/MCP setups do today — every schema
+injected every turn). Agent-level runs, `deepseek/deepseek-v4-flash` via OpenRouter,
+prompt caching on, 12 tasks, catalogue padded with distractors
+([full method & results](benchmarks/RESULTS.md)):
+
+| catalog | condition | success | eff. tokens | SIFT cheaper | wrong calls |
+|--------:|-----------|--------:|------------:|-------------:|------------:|
+|  25 | flat baseline | 100% |  3,497 | —    | 0.25 |
+|  25 | **SIFT**      | 100% |  3,124 | 1.1× | 0.00 |
+| 100 | flat baseline | 100% | 16,068 | —    | 0.08 |
+| 100 | **SIFT**      | 100% |  3,965 | **4.1×** | 0.00 |
+| 250 | flat baseline | 100% | 31,936 | —    | 0.00 |
+| 250 | **SIFT**      | 100% |  3,795 | **8.4×** | 0.00 |
+
+SIFT's cost stays ~flat as the catalogue grows; the flat baseline scales with it
+(and one flat task at 250 tools blew up to 152k tokens — SIFT used 5.7k on the
+same task). Zero wrong-tool calls at every size.
+
+**Raw query vs active tool request** (top-1 routing accuracy, 17-tool catalogue
+with deliberate verb collisions, hybrid retrieval):
+
+| discovery form | top-1 |
+|---|---:|
+| `search_tools("cancel my 3pm")` — raw user query | 64% |
+| `search_request(domain="calendar", action="cancel an event")` | **100%** |
+
+Matches the MCP-Zero finding (query-only retrieval plateaus at ~65–72%). Honest
+caveat: small, author-constructed catalogues — directional, not independent
+benchmarks. Both are reproducible:
+
+```bash
+python benchmarks/run_benchmark.py        # SIFT vs flat (needs OPENROUTER_API_KEY)
+python benchmarks/ab_active_request.py    # query vs active request (offline)
+```
+
 ## Install
 
 ```bash

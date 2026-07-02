@@ -87,6 +87,14 @@ def test_search_ranks_gold(sift):
     assert any(r.path == "google_workspace.gmail.read" for r in res)
 
 
+def test_set_response_invalidates_toon_cache(sift):
+    before = sift.get_tool_schema("google_workspace.gmail.read")   # populates the cache
+    assert "r:id,subject,from,snippet,date" in before
+    sift.set_response("google_workspace.gmail.read", returns=["id", "subject"])
+    after = sift.get_tool_schema("google_workspace.gmail.read")
+    assert "r:id,subject" in after and "snippet" not in after      # not the stale line
+
+
 def test_structured_param_colon_default():
     """The structured dict form supports defaults containing ':' (the string DSL can't)."""
     from sift.registry import ToolDef

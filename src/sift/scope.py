@@ -53,7 +53,8 @@ class SiftScope:
         return self._sift.gateway.search_request_compact(domain, action, top_k, predicate=self.allowed)
 
     def get_tool_schema(self, path: str) -> str:
-        return self._sift.get_tool_schema(path)  # browse-only; execute stays enforced
+        # scoped browse: denied tools are not even visible (no schema disclosure)
+        return self._sift.gateway.get_tool_schema(path, predicate=self.allowed)
 
     def execute_tool(self, path: str, params: dict | None = None):
         if not self.allowed(path):
@@ -78,13 +79,13 @@ class SiftScope:
                 q = (args.get("q") or "").strip()
                 if q:
                     return self.search_compact(q, top_k)
-                return self._sift.get_tool_schema(args.get("path", "") or "")  # browse (read-only)
+                return self.get_tool_schema(args.get("path", "") or "")  # scoped browse
             if name == "execute_tool":
                 if not self.allowed(args.get("path", "")):
                     return json.dumps({"error": f"tool {args.get('path')!r} is not allowed in this scope"})
                 return self._sift.dispatch("execute_tool", args)
-            if name == "get_tool_schema":  # deprecated alias
-                return self._sift.dispatch("get_tool_schema", args)
+            if name == "get_tool_schema":  # deprecated alias — scoped browse too
+                return self.get_tool_schema(args.get("path", "") or "")
             if name == "run_code":
                 return self.run_code(args["code"])
             return json.dumps({"error": f"unknown meta-tool {name!r}"})
