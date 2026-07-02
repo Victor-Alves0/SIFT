@@ -83,6 +83,31 @@ def _fn_schema(tool: "ToolDef") -> dict:
     }
 
 
+_JSON_TYPES = {"string": "string", "number": "number", "integer": "integer", "int": "integer",
+               "float": "number", "boolean": "boolean", "bool": "boolean", "array": "array",
+               "list": "array", "object": "object", "dict": "object"}
+
+
+def input_schema_for(tool: "ToolDef") -> dict:
+    """A standard JSON Schema for the tool's parameters — what OpenAI-style
+    function specs and Anthropic ``input_schema`` expect."""
+    props: dict = {}
+    required: list[str] = []
+    for name, p in tool.params.items():
+        prop: dict = {"type": _JSON_TYPES.get(p.type.lower(), "string")}
+        if p.desc:
+            prop["description"] = p.desc
+        if p.default != "":
+            prop["default"] = p.default
+        props[name] = prop
+        if p.required:
+            required.append(name)
+    schema: dict = {"type": "object", "properties": props}
+    if required:
+        schema["required"] = required
+    return schema
+
+
 @dataclass
 class ToolDef:
     path: str
@@ -92,6 +117,7 @@ class ToolDef:
     risk: bool = False
     fn: Callable[..., dict] | None = None
     transform: Callable[[Any], Any] | None = None  # post-process the raw result
+    examples: list[str] = field(default_factory=list)  # "how a user asks" — indexed
 
     def __post_init__(self) -> None:
         # store params canonically as Param objects regardless of input form
@@ -108,7 +134,13 @@ class SearchEntry:
     path: str
     kind: str  # "service" | "function"
     description: str
-    text: str  # rich text used to build the embedding
+    text: str      # rich text for the EMBEDDING side (desc + params + examples)
+    lex: str = ""  # lean text for the BM25 side (path + desc only) — extra tokens
+                   # would only dilute tf/length normalisation for exact matching
+
+    def __post_init__(self) -> None:
+        if not self.lex:
+            self.lex = self.text
 
 
 class Registry:
@@ -119,10 +151,16 @@ class Registry:
         self._node_desc: dict[str, str] = {}  # "cat" or "cat.svc" -> description
 
     # ------------------------------------------------------------------ build
-    def add(self, tool: ToolDef) -> None:
+    def add(self, tool: ToolDef, *, replace: bool = False) -> None:
         if tool.path.count(".") != 2:
             raise ValueError(
                 f"tool path must be 'category.service.function', got {tool.path!r}"
+            )
+        # silent overwrites are a footgun (two imported MCP servers with a
+        # same-named tool would shadow each other without a trace)
+        if not replace and tool.path in self._tools:
+            raise ValueError(
+                f"tool {tool.path!r} is already registered — pass replace=True to overwrite"
             )
         self._tools[tool.path] = tool
 
@@ -218,23 +256,32 @@ class Registry:
         """Flatten to searchable nodes (services and functions), stable order."""
         entries: list[SearchEntry] = []
         for cat in sorted(self.categories()):
-            cat_desc = self._desc(cat)
+            cat_desc = self._node_desc.get(cat, "")   # only an EXPLICIT category desc
             for svc in sorted(self.services(cat)):
                 svc_path = f"{cat}.{svc}"
                 svc_desc = self._desc(svc_path)
-                entries.append(
-                    SearchEntry(svc_path, "service", svc_desc, f"{cat} {svc}: {svc_desc}. {cat_desc}")
-                )
+                # NB: don't append a synthesised category desc here — it duplicates
+                # the service's own text (inflating BM25 tf) and leaks sibling
+                # services' wording into this entry
+                text = f"{cat} {svc}: {svc_desc}"
+                if cat_desc:
+                    text += f". {cat_desc}"
+                entries.append(SearchEntry(svc_path, "service", svc_desc, text))
                 for fn_name, tool in sorted(self.functions(svc_path).items()):
-                    # index param names/descriptions too — "max results", "recipient
-                    # address" etc. carry retrieval signal the description alone lacks
+                    lex = f"{cat} {svc} {fn_name}: {tool.description}"
+                    # the embedding side also gets param names/descriptions and
+                    # example phrasings — context dense retrieval can use, but
+                    # which would dilute BM25's exact-term matching
                     param_text = " ".join(
                         f"{p.name} {p.desc}".strip() for p in tool.params.values()
                     ).strip()
-                    text = f"{cat} {svc} {fn_name}: {tool.description}"
+                    text = lex
                     if param_text:
                         text += f" ({param_text})"
-                    entries.append(SearchEntry(tool.path, "function", tool.description, text))
+                    if tool.examples:   # "how a user asks" phrasings — strong signal
+                        text += " e.g. " + "; ".join(tool.examples)
+                    entries.append(SearchEntry(tool.path, "function", tool.description,
+                                               text, lex=lex))
         return entries
 
     # ----------------------------------------------------------------- schema

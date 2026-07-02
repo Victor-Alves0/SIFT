@@ -32,6 +32,7 @@ Quickstart::
 from __future__ import annotations
 
 import json
+import logging
 from typing import Callable
 
 from .gateway import Gateway, SearchResult
@@ -39,15 +40,34 @@ from .metatools import META_TOOL_NAMES, SYSTEM_PROMPT, tool_specs
 from .registry import Registry, ToolDef
 
 __all__ = ["Sift", "Registry", "ToolDef", "SearchResult", "SYSTEM_PROMPT", "tool_specs"]
-__version__ = "0.3.0"
+__version__ = "0.4.0"
+
+_log = logging.getLogger("sift")
 
 
 class Sift:
-    """The public facade: register tools, build the index, expose meta-tools."""
+    """The public facade: register tools, build the index, expose meta-tools.
+
+    Notable knobs:
+
+    - ``index_cache``: file path persisting document vectors across process
+      restarts (cold start drops from tens of seconds to ~ms on big catalogues).
+    - ``max_result_chars``: cap on any tool result string sent to the model
+      (default 100k chars; ``None``/0 disables). Truncation appends a marker
+      telling the model the result was cut and how to trim the tool.
+    - ``observer``: ``callable(event: str, data: dict)`` receiving ``search`` /
+      ``execute`` / ``run_code`` events with timing — hook tracing/metrics here.
+
+    Thread-safety: register tools and ``build_index()`` first, then serve; after
+    the build, discovery/execution are read-only on SIFT's side and safe to call
+    concurrently (your tool functions' own thread-safety is on you).
+    """
 
     def __init__(self, *, registry: Registry | None = None, embedder=None,
                  model_name: str | None = None, retrieval: str = "hybrid",
-                 reranker=None, min_score: float = 0.0, sandbox=None) -> None:
+                 reranker=None, min_score: float = 0.0, sandbox=None,
+                 index_cache: str | None = None, max_result_chars: int | None = 100_000,
+                 observer: Callable[[str, dict], None] | None = None) -> None:
         self.registry = registry or Registry()
         self._embedder = embedder
         self._model_name = model_name
@@ -55,22 +75,51 @@ class Sift:
         self._reranker = reranker
         self._min_score = min_score
         self._sandbox = sandbox  # code-mode backend (default: in-process)
+        self._index_cache = index_cache
+        self._max_result_chars = max_result_chars
+        self._observer = observer
         self._gateway: Gateway | None = None
+
+    # ---------------------------------------------------------- observability
+    def _emit(self, event: str, data: dict) -> None:
+        _log.debug("%s %s", event, data)
+        if self._observer is not None:
+            try:
+                self._observer(event, data)
+            except Exception:   # observers must never break the tool loop
+                _log.exception("sift observer raised")
+
+    def _cap(self, text: str) -> str:
+        limit = self._max_result_chars
+        if limit and len(text) > limit:
+            dropped = len(text) - limit
+            return (text[:limit]
+                    + f'... [truncated {dropped} chars — trim this tool with '
+                      f'set_response(returns=[...]) or transform=]')
+        return text
 
     # ----------------------------------------------------------- registration
     def tool(self, path: str, *, description: str, params: dict | None = None,
              returns: list[str] | None = None, risk: bool = False,
-             transform: Callable | None = None) -> Callable:
-        """Decorator: register a function as a tool at ``path``."""
+             transform: Callable | None = None, examples: list[str] | None = None,
+             replace: bool = False) -> Callable:
+        """Decorator: register a function as a tool at ``path``.
+
+        ``examples`` are optional "how a user asks for this" phrasings — they are
+        indexed for retrieval and improve discovery on ambiguous verbs.
+        """
         def deco(fn: Callable[..., dict]) -> Callable[..., dict]:
-            self.registry.add(ToolDef(path, description, params or {}, returns or [], risk, fn, transform))
+            self.registry.add(ToolDef(path, description, params or {}, returns or [],
+                                      risk, fn, transform, examples or []), replace=replace)
             return fn
         return deco
 
     def add_tool(self, path: str, fn: Callable[..., dict], *, description: str,
                  params: dict | None = None, returns: list[str] | None = None,
-                 risk: bool = False, transform: Callable | None = None) -> "Sift":
-        self.registry.add(ToolDef(path, description, params or {}, returns or [], risk, fn, transform))
+                 risk: bool = False, transform: Callable | None = None,
+                 examples: list[str] | None = None, replace: bool = False) -> "Sift":
+        self.registry.add(ToolDef(path, description, params or {}, returns or [],
+                                  risk, fn, transform, examples or []), replace=replace)
         return self
 
     def describe(self, node_path: str, description: str) -> "Sift":
@@ -105,7 +154,7 @@ class Sift:
             self._embedder = FastEmbedder(self._model_name)
         self._gateway = Gateway(self.registry, self._embedder, retrieval=self._retrieval,
                                 reranker=self._reranker, min_score=self._min_score)
-        self._gateway.build_index()
+        self._gateway.build_index(cache=self._index_cache)
         return self
 
     @property
@@ -129,33 +178,76 @@ class Sift:
     def execute_tool(self, path: str, params: dict | None = None) -> dict:
         return self.gateway.execute_tool(path, params)
 
+    async def aexecute_tool(self, path: str, params: dict | None = None) -> dict:
+        """Async execution — required for ``async def`` tools; fine for sync ones."""
+        return await self.gateway.aexecute_tool(path, params)
+
+    async def adispatch(self, name: str, arguments: dict | str) -> str:
+        """Async twin of ``dispatch``: awaits async tools; ``run_code`` is moved
+        to a worker thread (the sandbox may block on a subprocess)."""
+        import asyncio
+        args = json.loads(arguments) if isinstance(arguments, str) else dict(arguments or {})
+        try:
+            if name == "execute_tool":
+                res = await self.aexecute_tool(args["path"], args.get("params") or {})
+                self._emit("execute", {"path": args.get("path"), "ok": True, "ms": None})
+                return self._cap(json.dumps(res, ensure_ascii=False, default=str))
+            if name == "run_code":
+                return self._cap(await asyncio.to_thread(self.run_code, args["code"]))
+        except Exception as exc:
+            self._emit("execute", {"path": args.get("path"), "ok": False, "error": str(exc), "ms": None})
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return self.dispatch(name, args)  # search/browse are cheap and sync-safe
+
+    def session(self, *, max_promoted: int = 10):
+        """A per-conversation view that REMEMBERS discovered tools and promotes
+        them to real function specs on later turns (no re-searching). See
+        :mod:`sift.session`."""
+        from .session import SiftSession
+        return SiftSession(self, max_promoted=max_promoted)
+
     def dispatch(self, name: str, arguments: dict | str) -> str:
         """Run a meta-tool call by name; returns a string (TOON or JSON).
 
         Handy as the single entry point when wiring SIFT into an LLM loop.
-        Handles the 2 meta-tools plus ``run_code`` (code mode).
+        Handles the 2 meta-tools plus ``run_code`` (code mode). Results are
+        capped at ``max_result_chars``; errors come back as ``{"error": ...}``.
         """
+        import time
         args = json.loads(arguments) if isinstance(arguments, str) else dict(arguments or {})
+        t0 = time.perf_counter()
         try:
             if name == "search_tools":
                 top_k = int(args.get("top_k", 3))
                 domain = (args.get("domain") or "").strip()
                 action = (args.get("action") or "").strip()
-                if domain or action:  # active tool request — structured intent
-                    return self.gateway.search_request_compact(domain, action, top_k)
                 q = (args.get("q") or "").strip()
-                if q:  # semantic discovery — compact TOON with schema inline
-                    return self.gateway.search_compact(q, top_k)
-                return self.gateway.get_tool_schema(args.get("path", "") or "")  # browse
+                if domain or action:  # active tool request — structured intent
+                    out = self.gateway.search_request_compact(domain, action, top_k)
+                elif q:               # semantic discovery — TOON with schema inline
+                    out = self.gateway.search_compact(q, top_k)
+                else:                 # browse a hierarchy level
+                    out = self.gateway.get_tool_schema(args.get("path", "") or "")
+                self._emit("search", {"q": q, "domain": domain, "action": action,
+                                      "ms": round((time.perf_counter() - t0) * 1000, 1)})
+                return out
             if name == "run_code":
-                return self.run_code(args["code"])
+                out = self._cap(self.run_code(args["code"]))
+                self._emit("run_code", {"ok": '"error"' not in out[:12],
+                                        "ms": round((time.perf_counter() - t0) * 1000, 1)})
+                return out
             if name == "get_tool_schema":  # deprecated alias — folded into search_tools
                 return self.get_tool_schema(args.get("path", ""))
             if name == "execute_tool":
                 res = self.execute_tool(args["path"], args.get("params") or {})
-                return json.dumps(res, ensure_ascii=False, default=str)
+                self._emit("execute", {"path": args.get("path"), "ok": True,
+                                       "ms": round((time.perf_counter() - t0) * 1000, 1)})
+                return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             return json.dumps({"error": f"unknown meta-tool {name!r}"})
         except Exception as exc:  # surfaced back to the model as a tool result
+            self._emit("execute" if name == "execute_tool" else name,
+                       {"path": args.get("path"), "ok": False, "error": str(exc),
+                        "ms": round((time.perf_counter() - t0) * 1000, 1)})
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
     # --------------------------------------------------------------- adapters

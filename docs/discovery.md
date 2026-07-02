@@ -96,6 +96,37 @@ Sift(retrieval="bm25")       # lexical only — NO model download, zero deps
 - **bm25**: lexical only. Requires no model at all — fast and dependency-light,
   great for tests, CI, or catalogues with distinctive names.
 
+Details that make the hybrid sharper (v0.4+):
+
+- **Each signal gets its own text.** BM25 matches against lean `path: description`
+  text (extra tokens would dilute tf/length normalisation); embeddings get the
+  enriched text — description + parameter names/descriptions + `examples=`.
+- **Light stemming** on the BM25 side: "emails"~"email", "deleted"~"delete".
+- **All-zero BM25 ties return nothing** — "no term matched" is an honest empty
+  result, not an arbitrary winner.
+- **Query-side embeddings** use the embedder's `embed_query` when it has one
+  (E5-style asymmetric models; a no-op for the default bge model).
+- **`examples=`** on a tool ("how a user asks for this") are indexed and lift
+  discovery of ambiguous verbs:
+
+```python
+@sift.tool("dev.repo.bisect", description="Run a binary search over commits",
+           examples=["find which commit broke the build"])
+```
+
+### Index persistence (cold starts)
+
+`build_index()` embeds the whole catalogue — tens of seconds at MCP scale
+(~2.8k tools), on every process start. Persist the vectors:
+
+```python
+sift = Sift(index_cache="./sift-index.npz")   # warm start: load, don't re-embed
+```
+
+The cache stores a content+model hash; changing any tool text or the embedding
+model invalidates it automatically (measured ~10× on 300 tools, and the gap
+grows with size).
+
 `hybrid` and `embedding` need an embedder; the default is local `fastembed`. Plug
 in any object with `embed(texts) -> list[vector]` (OpenAI, Cohere, a sidecar):
 
@@ -129,12 +160,9 @@ sift = Sift(min_score=0.3)   # cosine floor; tune per embedding model
 ```
 
 With an embedder the floor is a calibrated cosine in `[0, 1]`; with `bm25` only,
-the floor becomes "at least one query term matched".
-
-> **Scale caveat:** the floor is compared against different signals per mode — in
-> `search_tools` it's the max embedding cosine; in `search_request` it's the max
-> hybrid blend (cosine + normalised BM25)/2. A threshold tuned on one mode does
-> not transfer 1:1 to the other; tune against the mode you actually use.
+the floor becomes "at least one query term matched". The scale is the **same in
+both search modes** (`search_tools` and `search_request`), so one tuned
+threshold applies everywhere.
 
 ## Tuning checklist
 

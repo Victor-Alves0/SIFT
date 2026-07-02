@@ -7,18 +7,22 @@ A condensed reference for the public surface. Source of truth is the docstrings 
 
 ```python
 Sift(*, registry=None, embedder=None, model_name=None, retrieval="hybrid",
-     reranker=None, min_score=0.0, sandbox=None)
+     reranker=None, min_score=0.0, sandbox=None, index_cache=None,
+     max_result_chars=100_000, observer=None)
 ```
 
 | Param | Default | Meaning |
 |---|---|---|
 | `registry` | new `Registry` | pre-populated registry (e.g. `Registry.from_json`) |
-| `embedder` | local fastembed | any object with `embed(texts) -> list[vector]` |
+| `embedder` | local fastembed | `embed(texts) -> list[vector]`; optional `embed_query` for asymmetric models |
 | `model_name` | `bge-small-en-v1.5` | fastembed model (or `SIFT_EMBED_MODEL` env) |
 | `retrieval` | `"hybrid"` | `"hybrid"` · `"embedding"` · `"bm25"` |
 | `reranker` | `None` | object with `rerank(query, docs) -> list[float]` |
-| `min_score` | `0.0` | relevance floor; below it, discovery returns nothing |
+| `min_score` | `0.0` | relevance floor (same scale in both search modes) |
 | `sandbox` | `InProcessSandbox` | code-mode backend |
+| `index_cache` | `None` | file path persisting vectors across restarts (auto-invalidated) |
+| `max_result_chars` | `100_000` | cap on results sent to the model (`None` disables) |
+| `observer` | `None` | `callable(event, data)` — search/execute/run_code telemetry |
 
 ### Registration
 
@@ -39,7 +43,10 @@ Sift(*, registry=None, embedder=None, model_name=None, retrieval="hybrid",
 | `search_request(domain, action, top_k=3)` | `list[SearchResult]` | active tool request (two-stage routing) |
 | `get_tool_schema(path)` | `str` (TOON) | browse a level (`""` → categories) |
 | `execute_tool(path, params=None)` | `dict` | run + project; args coerced to declared types (`integer`/`number`/`boolean`/`array`/`object`) |
-| `dispatch(name, arguments)` | `str` | run any meta-tool call; errors returned as `{"error": ...}` |
+| `aexecute_tool(path, params=None)` | `dict` (async) | awaits `async def` tools natively |
+| `dispatch(name, arguments)` | `str` | run any meta-tool call; errors returned as `{"error": ...}`; capped |
+| `adispatch(name, arguments)` | `str` (async) | async twin; `run_code` runs on a worker thread |
+| `session(max_promoted=10)` | `SiftSession` | per-conversation discovered-tool memory |
 
 `dispatch` handles `search_tools` (active request `domain`/`action` → query `q` →
 browse `path`), `execute_tool`, `run_code`, and the deprecated `get_tool_schema`
@@ -78,6 +85,24 @@ alias.
 | `serve_mcp(name="sift", transport="stdio")` | run it; `transport` = `"stdio"` / `"sse"` |
 | `serve_http(*, host="127.0.0.1", port=8000, scope=None)` | OpenAPI HTTP server; `[server]` |
 
+## `SiftSession` (`sift.session`)
+
+Per-conversation tool memory (see [Providers → Session memory](providers.md#session-memory-any-provider)).
+`tools()` returns meta-tools + promoted specs; `dispatch` records discoveries and
+routes promoted names (`path` with `.` → `__`) straight to execution;
+`discovered` lists remembered paths. Wraps a `Sift` or a `SiftScope`.
+
+## Anthropic tool search adapter (`sift.adapters.anthropic`)
+
+| Function | Purpose |
+|---|---|
+| `deferred_tools(sift, *, keep=())` | catalogue as `defer_loading` tools + SIFT's search tool |
+| `tool_search_result(sift, tool_use_id, args, *, top_k=5)` | `tool_result` with `tool_reference` blocks |
+| `run_agent_deferred(sift, client, model, message, *, keep=())` | full loop over the deferred catalogue |
+| `run_agent(sift, client, model, message)` | classic 2-meta-tool loop |
+
+`sift.adapters.openai` additionally provides `run_agent_responses` (Responses API).
+
 ## `SearchResult`
 
 ```python
@@ -105,7 +130,8 @@ Holds tools by dotted path. Highlights:
 | Member | Notes |
 |---|---|
 | `Registry.from_json(path)` | load the nested `category → services → fns` JSON |
-| `add(ToolDef)` | register (path must have exactly two dots) |
+| `add(ToolDef, *, replace=False)` | register (two-dot path; duplicate raises unless `replace=True`) |
+| `input_schema_for(tool)` | JSON Schema for a tool's params (module function) |
 | `bind(path, fn)` | attach an executor to an already-registered tool |
 | `set_response(path, *, returns=None, transform=None)` | configure projection |
 | `describe(node_path, description)` | category/service description |

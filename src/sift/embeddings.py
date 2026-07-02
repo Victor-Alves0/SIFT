@@ -14,6 +14,11 @@ import numpy as np
 
 @runtime_checkable
 class Embedder(Protocol):
+    """``embed(texts)`` is required (used for documents). An embedder MAY also
+    provide ``embed_query(texts)`` for models trained with an asymmetric
+    query/passage scheme (E5-style prefixes); the gateway uses it for queries
+    when present and falls back to ``embed`` otherwise."""
+
     def embed(self, texts: Sequence[str]) -> list[np.ndarray]:
         ...
 
@@ -29,6 +34,11 @@ class FastEmbedder:
 
     def embed(self, texts: Sequence[str]) -> list[np.ndarray]:
         return [np.asarray(v, dtype=np.float32) for v in self._model.embed(list(texts))]
+
+    def embed_query(self, texts: Sequence[str]) -> list[np.ndarray]:
+        """Query-side embeddings — applies the model's query prefix where the
+        model has one (E5 family; a no-op for bge, verified)."""
+        return [np.asarray(v, dtype=np.float32) for v in self._model.query_embed(list(texts))]
 
 
 def cosine(a: np.ndarray, b: np.ndarray) -> float:

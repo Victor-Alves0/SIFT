@@ -47,6 +47,56 @@ run_agent(sift, anthropic.Anthropic(), "claude-haiku-4.5", "what's my last email
 
 `sift.anthropic_tools()` gives the raw specs if you want to drive the loop yourself.
 
+### Claude-native tool search (defer_loading) with SIFT retrieval
+
+Anthropic's [tool search tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+loads tools on demand: the catalogue goes up as `defer_loading: true` tools and
+the API expands discovered `tool_reference` blocks into full definitions. The
+built-in search variants are regex and BM25 — but a **custom client-side search
+tool** may answer with `tool_reference` blocks, and that's where SIFT plugs in
+(hybrid semantic retrieval + the active tool request):
+
+```python
+from sift.adapters.anthropic import deferred_tools, tool_search_result, run_agent_deferred
+
+# turn-key loop:
+run_agent_deferred(sift, client, "claude-opus-4-8", "what's my last email?",
+                   keep=("google_workspace.gmail.read",))   # keep= stays non-deferred
+
+# or wire it into your own loop:
+tools = deferred_tools(sift)                       # search tool + deferred catalogue
+# ... when Claude calls "search_tools":
+result_block = tool_search_result(sift, block.id, block.input)   # tool_reference blocks
+# ... when Claude calls a discovered tool (name is path with "." -> "__"):
+sift.execute_tool(block.name.replace("__", "."), block.input)
+```
+
+This keeps prompt caching intact (deferred definitions stay out of the prefix)
+and works with scoped views too.
+
+### OpenAI Responses API
+
+The chat-completions driver keeps working; for the newer Responses API:
+
+```python
+from sift.adapters.openai import run_agent_responses
+run_agent_responses(sift, OpenAI(), "gpt-4o-mini", "what's my last email?")
+```
+
+## Session memory (any provider)
+
+`sift.session()` remembers which tools discovery surfaced during a conversation
+and **promotes** them to first-class specs on later turns — the model calls them
+directly (name = path with `.` → `__`), no re-search round-trip:
+
+```python
+session = sift.session(max_promoted=10)
+tools = session.tools()          # rebuild each turn: meta-tools + promoted tools
+out = session.dispatch(name, args)   # promoted names route straight to execution
+```
+
+Wrap a scope (`SiftSession(view)`) and promoted execution stays allow/deny-enforced.
+
 ## LangChain
 
 ```python

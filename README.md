@@ -87,12 +87,12 @@ SIFT's cost stays ~flat as the catalogue grows; the flat baseline scales with it
 (and one flat task at 250 tools blew up to 152k tokens — SIFT used 5.7k on the
 same task). Zero wrong-tool calls at every size.
 
-**Raw query vs active tool request** (top-1 routing accuracy, 17-tool catalogue
-with deliberate verb collisions, hybrid retrieval):
+**Raw query vs active tool request** (top-1 routing accuracy on the agent-facing
+view, 17-tool catalogue with deliberate verb collisions, hybrid retrieval):
 
 | discovery form | top-1 |
 |---|---:|
-| `search_tools("cancel my 3pm")` — raw user query | 64% |
+| `search_tools("cancel my 3pm")` — raw user query | 79% |
 | `search_request(domain="calendar", action="cancel an event")` | **100%** |
 
 Matches the MCP-Zero finding (query-only retrieval plateaus at ~65–72%). Honest
@@ -220,6 +220,55 @@ sift.set_response("google_workspace.gmail.read", returns=["id", "subject", "from
 catalogue size**, and ~free across a conversation with prompt caching. A flat
 catalogue instead injects *every* schema each turn (~2.4k tokens at 25 tools,
 ~95k at 1,000).
+
+## Production knobs
+
+```python
+sift = Sift(
+    index_cache="./sift-index.npz",   # persist vectors: warm start loads in ~ms
+                                      # instead of re-embedding (10×+ on big catalogues)
+    max_result_chars=100_000,         # cap any tool result sent to the model (default);
+                                      # truncation tells the model how to trim the tool
+    observer=lambda ev, data: print(ev, data),   # search/execute/run_code events
+)                                                # with timing — wire tracing here
+```
+
+Async agents: `await sift.aexecute_tool(...)` / `await sift.adispatch(...)` —
+`async def` tools are awaited natively. Thread-safety: register + `build_index()`
+first, then serve; after the build, discovery/execution are read-only on SIFT's
+side and safe to call concurrently.
+
+## Session memory (no re-searching)
+
+Without memory, a model re-searches for the same tool every turn. A session
+remembers what discovery surfaced and **promotes** those tools to first-class
+function specs on later turns (the same pattern Anthropic's tool search uses to
+expand `tool_reference` blocks):
+
+```python
+session = sift.session()
+tools = session.tools()            # 2 meta-tools now; grows as tools are found
+session.dispatch(name, args)       # records discoveries; promoted tools are
+                                   # called DIRECTLY by name — no search round-trip
+```
+
+Works over a scope too (`SiftSession(view)`) — promoted execution stays
+allow/deny-enforced.
+
+## Claude-native tool search (defer_loading) with SIFT retrieval
+
+Anthropic's tool search tool ships regex/BM25 variants — and an official hook for
+[custom search backends](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation).
+SIFT plugs into that slot: the whole catalogue goes up as `defer_loading: true`
+tools, discovery runs through SIFT's **hybrid retrieval + active tool request**,
+and the API expands the returned `tool_reference` blocks natively:
+
+```python
+from sift.adapters.anthropic import run_agent_deferred
+run_agent_deferred(sift, anthropic.Anthropic(), "claude-opus-4-8",
+                   "what's my last email?", keep=("google_workspace.gmail.read",))
+# or wire it yourself: deferred_tools(sift) + tool_search_result(sift, id, args)
+```
 
 ## Hybrid retrieval & reranking
 

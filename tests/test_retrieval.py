@@ -45,11 +45,9 @@ class _FakeReranker:
 
 
 def test_reranker_reorders():
-    # distinct categories so the synthesised category description doesn't leak
-    # 'drive' into the mail entries.
     s = Sift(retrieval="bm25", reranker=_FakeReranker())
 
-    @s.tool("mail.gmail.read", description="Read emails from the inbox", params={}, returns=["id"])
+    @s.tool("mail.gmail.read", description="Read the list of emails in the inbox", params={}, returns=["id"])
     def _r():
         return {"id": "1"}
 
@@ -58,8 +56,24 @@ def test_reranker_reorders():
         return {"id": "2"}
 
     s.build_index()
-    res = s.search_tools("emails", top_k=2)  # query leans mail, but reranker forces drive top
+    # both docs match "list" (zero-score docs are no longer rerank candidates);
+    # BM25 alone leans mail ("emails list"), but the reranker forces drive on top
+    res = s.search_tools("emails list", top_k=2)
     assert "drive" in res[0].path
+
+
+def test_bm25_zero_scores_return_nothing():
+    """An all-zero BM25 tie is 'nothing matched', not an arbitrary winner —
+    even without a min_score configured."""
+    s = _bm25_sift()
+    assert s.search_tools("zzqq xyzzy nomatch", top_k=3) == []
+
+
+def test_stemming_matches_inflections():
+    docs = ["delete a calendar event", "read emails from the inbox"]
+    b = BM25(docs)
+    assert rank_order(b.scores("deleted events"))[0] == 0   # deleted~delete, events~event
+    assert b.scores("email")[1] > 0                          # email~emails
 
 
 def test_min_score_returns_no_match():

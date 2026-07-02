@@ -67,12 +67,17 @@ def main() -> None:
         sift.add_tool(path, (lambda: {"ok": True}), description=desc, returns=["ok"])
     sift.build_index()
 
+    def top_function(results):
+        """The agent-facing view: dispatch renders FUNCTIONS only (services are
+        navigation nodes), so top-1 here means 'first executable match'."""
+        return [r for r in results if r.kind == "function"][:1]
+
     q_hits = a_hits = 0
     print(f"retrieval={RETRIEVAL}  catalogue={len(CATALOG)} tools  cases={len(CASES)}\n")
     print(f"{'raw user query':<31}{'q':>2}{'a':>2}  gold")
     for query, domain, action, gold in CASES:
-        q_top = sift.search_tools(query, top_k=1)
-        a_top = sift.search_request(domain, action, top_k=1)
+        q_top = top_function(sift.search_tools(query, top_k=4))
+        a_top = top_function(sift.search_request(domain, action, top_k=4))
         q_ok = bool(q_top) and q_top[0].path == gold
         a_ok = bool(a_top) and a_top[0].path == gold
         q_hits += q_ok

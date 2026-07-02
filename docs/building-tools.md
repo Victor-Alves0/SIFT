@@ -48,8 +48,11 @@ Arguments:
 | `returns` | response whitelist — only these top-level fields survive `execute_tool` |
 | `risk` | `True` marks a high-impact action, surfaced as `|risk` in the schema |
 | `transform` | a callable to reshape the raw result before whitelisting (see below) |
+| `examples` | optional "how a user asks for this" phrasings — indexed for retrieval |
+| `replace` | registering an existing path raises unless `replace=True` (no silent shadowing) |
 
 The wrapped function must **return a `dict`** (a `TypeError` is raised otherwise).
+`async def` tools are supported — execute them via `aexecute_tool`/`adispatch`.
 
 ## Parameters
 

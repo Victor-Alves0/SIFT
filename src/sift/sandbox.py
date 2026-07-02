@@ -163,6 +163,17 @@ class SubprocessSandbox:
         except Exception:
             pass
 
+    # Env vars the child actually needs to boot Python + import sift. Everything
+    # else — API keys above all — must NOT leak into the process that runs
+    # untrusted code.
+    _ENV_KEEP = ("PATH", "PYTHONPATH", "PYTHONHOME", "SYSTEMROOT", "SYSTEMDRIVE",
+                 "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "HOME", "USERPROFILE")
+
+    def _child_env(self) -> dict:
+        env = {k: os.environ[k] for k in self._ENV_KEEP if k in os.environ}
+        env["PYTHONIOENCODING"] = "utf-8"
+        return env
+
     def run(self, code: str, call, search, schema) -> str:
         handlers = {
             "call": lambda m: call(m["path"], **(m.get("params") or {})),
@@ -175,9 +186,21 @@ class SubprocessSandbox:
 
         proc = subprocess.Popen(
             [sys.executable, "-m", "sift._sandbox_child"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, bufsize=1, **kwargs,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=self._child_env(), text=True, bufsize=1, **kwargs,
         )
+
+        # drain stderr on a thread (a full pipe would deadlock the child); keep a
+        # tail so an unexpected crash is diagnosable instead of a blind exit
+        stderr_tail: list[str] = []
+
+        def _drain():
+            with contextlib.suppress(Exception):
+                for line in proc.stderr:
+                    stderr_tail.append(line)
+                    del stderr_tail[:-20]
+
+        threading.Thread(target=_drain, daemon=True).start()
 
         killed = {"v": False}
 
@@ -212,4 +235,6 @@ class SubprocessSandbox:
 
         if killed["v"]:
             return json.dumps({"error": "SandboxError: wall-clock timeout"})
-        return json.dumps({"error": "SandboxError: sandbox child exited unexpectedly"})
+        detail = ("".join(stderr_tail).strip()[-500:]) or "no stderr output"
+        return json.dumps({"error": f"SandboxError: sandbox child exited unexpectedly ({detail})"},
+                          ensure_ascii=False)

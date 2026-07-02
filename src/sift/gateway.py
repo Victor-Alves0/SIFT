@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from inspect import isawaitable as _isawaitable
 
 from . import toon
 from .embeddings import Embedder, cosine
@@ -43,11 +44,9 @@ class Gateway:
         self.embedder = embedder
         self.retrieval = retrieval
         self.reranker = reranker  # object with .rerank(query, docs) -> list[float]
-        # Relevance floor; below it, search returns nothing. NOTE the scale differs
-        # by mode: in search_tools it's the max embedding cosine (or "any BM25 hit"
-        # when bm25-only); in search_request it's the max hybrid blend from
-        # _relevance ((cosine + normalised BM25)/2). A threshold tuned for one
-        # mode does not transfer to the other.
+        # Relevance floor; below it, search returns nothing. Same scale in both
+        # search modes (see _passes_floor): max embedding cosine when an embedder
+        # exists, else "any BM25 term matched".
         self.min_score = min_score
         self._entries: list = []
         self._vectors: list = []
@@ -55,17 +54,54 @@ class Gateway:
         self._toon_cache: dict[str, str] = {}
 
     # ------------------------------------------------------------- index
-    def build_index(self) -> "Gateway":
+    def build_index(self, *, cache: "str | None" = None) -> "Gateway":
+        """Build (or load) the search index.
+
+        ``cache`` is a file path for persisting document vectors: on a hit
+        (same texts + same embedding model) the vectors are loaded instead of
+        re-embedded — cold starts drop from tens of seconds to milliseconds on
+        large catalogues. The BM25 side is always rebuilt (pure Python, fast).
+        """
         entries = self.reg.search_entries()
         if not entries:
             raise ValueError("registry is empty — register tools before build_index()")
         self._entries = entries
-        texts = [e.text for e in entries]
         if self.retrieval in ("hybrid", "embedding"):
-            self._vectors = self.embedder.embed(texts)
+            self._vectors = self._load_or_embed([e.text for e in entries], cache)
         if self.retrieval in ("hybrid", "bm25"):
-            self._bm25 = BM25(texts)
+            self._bm25 = BM25([e.lex for e in entries])
         return self
+
+    def _load_or_embed(self, texts: list[str], cache: "str | None"):
+        if cache is None:
+            return self.embedder.embed(texts)
+        import hashlib
+        from pathlib import Path
+
+        import numpy as np
+
+        model = getattr(self.embedder, "model_name", type(self.embedder).__name__)
+        key = hashlib.sha256(("\x00".join(texts) + "\x01" + model).encode()).hexdigest()
+        path = Path(cache)
+        if path.exists():
+            try:
+                with path.open("rb") as fh:
+                    data = np.load(fh, allow_pickle=False)
+                    if str(data["key"]) == key:
+                        return list(data["vectors"])
+            except Exception:  # corrupt/old cache -> silently re-embed below
+                pass
+        vectors = self.embedder.embed(texts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as fh:
+            np.savez(fh, key=np.array(key), vectors=np.stack([np.asarray(v) for v in vectors]))
+        return vectors
+
+    def _embed_query(self, query: str):
+        """Query-side embedding — uses the embedder's asymmetric ``embed_query``
+        when it has one (E5-style prefixes), else plain ``embed``."""
+        fn = getattr(self.embedder, "embed_query", self.embedder.embed)
+        return fn([query])[0]
 
     # --------------------------------------------------- meta-tool: search
     def search_tools(self, query: str, top_k: int = 5, *, predicate=None) -> list[SearchResult]:
@@ -75,7 +111,7 @@ class Gateway:
 
         emb_scores = bm_scores = None
         if self.retrieval in ("hybrid", "embedding"):
-            qv = self.embedder.embed([query])[0]
+            qv = self._embed_query(query)
             emb_scores = [cosine(qv, v) for v in self._vectors]
         if self.retrieval in ("hybrid", "bm25"):
             bm_scores = self._bm25.scores(query)
@@ -94,7 +130,11 @@ class Gateway:
         if self.retrieval == "embedding":
             fused = {i: s for i, s in enumerate(emb_scores)}
         elif self.retrieval == "bm25":
-            fused = {i: s for i, s in enumerate(bm_scores)}
+            # zero is "no term matched", not a rank — an all-zero tie must not
+            # surface an arbitrary tool as if it were relevant
+            fused = {i: s for i, s in enumerate(bm_scores) if s > 0}
+            if not fused:
+                return []
         else:  # hybrid via Reciprocal Rank Fusion
             fused = rrf([rank_order(emb_scores), rank_order(bm_scores)])
 
@@ -145,7 +185,9 @@ class Gateway:
             return self.search_tools(action, top_k, predicate=predicate)
 
         a_rel = self._relevance(action)
-        if self.min_score > 0 and (not a_rel or max(a_rel) < self.min_score):
+        if not a_rel or max(a_rel) <= 0.0:   # zero signal on the action -> no matches
+            return []
+        if not self._passes_floor(action):
             return []
         d_rel = self._relevance(domain)
         svc_score = {e.path: d_rel[i] for i, e in enumerate(self._entries)
@@ -194,13 +236,24 @@ class Gateway:
         results = self.search_request(domain, action, top_k=top_k, predicate=predicate)
         return self._render_compact(results, top_k)
 
+    def _passes_floor(self, query: str) -> bool:
+        """The relevance floor on the SAME scale as ``search_tools`` uses: max
+        embedding cosine when an embedder exists, else "any BM25 term matched" —
+        so one ``min_score`` value works across both search modes."""
+        if self.min_score <= 0:
+            return True
+        if self.retrieval in ("hybrid", "embedding"):
+            qv = self._embed_query(query)
+            return max(cosine(qv, v) for v in self._vectors) >= self.min_score
+        return max(self._bm25.scores(query)) > 0
+
     def _relevance(self, query: str) -> list[float]:
         """Per-entry relevance in [0, 1] for ``query`` — the hybrid signal used by
         the multiplicative request-routing score (embedding cosine blended with
         max-normalised BM25). Magnitudes matter here, so this does NOT use RRF."""
         emb = bm = None
         if self.retrieval in ("hybrid", "embedding"):
-            qv = self.embedder.embed([query])[0]
+            qv = self._embed_query(query)
             emb = [cosine(qv, v) for v in self._vectors]
         if self.retrieval in ("hybrid", "bm25"):
             raw = self._bm25.scores(query)
@@ -283,9 +336,27 @@ class Gateway:
         if tool.fn is None:
             raise RuntimeError(f"tool {path!r} has no executor bound (use @sift.tool or sift.bind)")
         raw = tool.fn(**args)
+        if _isawaitable(raw):
+            raw.close()  # don't leak the un-awaited coroutine
+            raise TypeError(f"tool {path!r} is async — call it via aexecute_tool/adispatch")
+        return self._finish(path, tool, raw)
+
+    async def aexecute_tool(self, path: str, params: dict | None = None):
+        """Async twin of ``execute_tool`` — awaits ``async def`` tools natively
+        (sync tools are called inline; offload them yourself if they block)."""
+        tool = self.reg.tool(path)
+        args = self._prepare_args(tool.params, params or {})
+        if tool.fn is None:
+            raise RuntimeError(f"tool {path!r} has no executor bound (use @sift.tool or sift.bind)")
+        raw = tool.fn(**args)
+        if _isawaitable(raw):
+            raw = await raw
+        return self._finish(path, tool, raw)
+
+    @staticmethod
+    def _finish(path: str, tool, raw):
         if not isinstance(raw, dict):
             raise TypeError(f"executor for {path!r} must return a dict, got {type(raw).__name__}")
-
         # owner-configured projection: transform (reshape) then field whitelist
         result = tool.transform(raw) if tool.transform is not None else raw
         if tool.returns and isinstance(result, dict):

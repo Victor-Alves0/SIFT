@@ -95,6 +95,33 @@ def test_set_response_invalidates_toon_cache(sift):
     assert "r:id,subject" in after and "snippet" not in after      # not the stale line
 
 
+def test_examples_improve_discovery():
+    """`examples=` phrasings are indexed on the embedding side."""
+    from conftest import FakeEmbedder
+    from sift import Sift
+
+    # embedding-only isolates the example-text effect (examples enrich the
+    # dense side; the BM25 side stays lean by design)
+    s = Sift(embedder=FakeEmbedder(), retrieval="embedding")
+    s.add_tool("dev.repo.bisect", lambda: {"ok": 1}, description="Run a binary search over commits",
+               examples=["find which commit broke the build"])
+    s.add_tool("dev.repo.log", lambda: {"ok": 1}, description="Show the commit history")
+    s.build_index()
+    res = s.search_tools("which commit broke the build", top_k=1)
+    assert res[0].path == "dev.repo.bisect"       # matched via the example phrasing
+
+
+def test_subprocess_child_env_is_scrubbed(monkeypatch):
+    """The sandbox child must not inherit parent secrets (API keys etc.)."""
+    from sift.sandbox import SubprocessSandbox
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+    env = SubprocessSandbox()._child_env()
+    assert "OPENROUTER_API_KEY" not in env and "AWS_SECRET_ACCESS_KEY" not in env
+    assert "PATH" in env                           # but it can still boot Python
+
+
 def test_structured_param_colon_default():
     """The structured dict form supports defaults containing ':' (the string DSL can't)."""
     from sift.registry import ToolDef

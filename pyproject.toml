@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sift-tools"
-version = "0.3.0"
+version = "0.4.0"
 description = "Hierarchical, search-first tool discovery for LLM agents. Give the model 2 meta-tools instead of a 30k-token catalog."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,6 +18,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Operating System :: OS Independent",

@@ -89,3 +89,35 @@ recover from rather than crashing your loop.
 sift.dispatch("execute_tool", {"path": "nope.nope.nope"})
 # → '{"error": "unknown tool \'nope.nope.nope\'"}'
 ```
+
+## Result caps
+
+Anything `dispatch`/`adispatch` returns to the model is capped at
+`Sift(max_result_chars=100_000)` (default; `None` disables). Oversized results
+are truncated with a marker telling the model the result was cut and pointing
+the owner at `set_response(returns=/transform=)` — so a tool that suddenly
+returns 1 MB can't silently flood the context.
+
+## Async execution
+
+```python
+await sift.aexecute_tool("google_workspace.gmail.read", {"m": 1})
+await sift.adispatch("execute_tool", {"path": ..., "params": ...})
+```
+
+`async def` tools are awaited natively; calling one through the sync
+`execute_tool` raises a `TypeError` that points here. In `adispatch`,
+`run_code` is moved to a worker thread (the sandbox may block on a subprocess);
+search/browse are cheap and run inline.
+
+## Observability
+
+```python
+sift = Sift(observer=lambda event, data: my_tracer.emit(event, **data))
+# events: "search"  {"q"/"domain"/"action", "ms"}
+#         "execute" {"path", "ok", "ms", "error"?}
+#         "run_code" {"ok", "ms"}
+```
+
+Observer exceptions are swallowed (never break the tool loop). The same points
+log at DEBUG level under the `"sift"` stdlib logger.

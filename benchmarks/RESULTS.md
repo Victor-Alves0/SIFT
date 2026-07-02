@@ -39,17 +39,20 @@ the model's context as function-calling specs?
 
 Top-1 routing accuracy on a 17-tool multi-domain catalogue with deliberate verb
 collisions (read/list/send/delete across gmail, calendar, drive, slack, crm,
-jira), hybrid retrieval, 14 cases:
+jira), hybrid retrieval, 14 cases. Measured on the **agent-facing view**
+(functions only — what `dispatch` actually renders; services are navigation
+nodes). Numbers from v0.4.0's retrieval (stemmed BM25, lean-lex/rich-dense
+field split):
 
 | discovery form | top-1 |
 |---|---:|
-| query-only — `search_tools(raw_user_query)` | 9/14 = **64%** |
+| query-only — `search_tools(raw_user_query)` | 11/14 = **79%** |
 | active request — `search_request(domain, action)` | 14/14 = **100%** |
 
-The structured request fixed 5 ambiguous cases (e.g. "what's on my agenda" landed
-on the calendar *service* instead of `calendar.list`; "remove that ticket" hit
-`jira.issues.create` instead of `.delete`). Matches the MCP-Zero paper's finding
-that query-only retrieval plateaus at ~65–72%. Caveat: small, author-constructed
+The structured request fixes the ambiguous verbs ("remove that ticket" hits
+`jira.issues.create` instead of `.delete` on query-only; "open that doc" lands on
+the wrong domain's `read`). Directionally consistent with the MCP-Zero paper
+(query-only plateaus at ~65–72% there). Caveat: small, author-constructed
 catalogue — directional evidence, not an independent benchmark.
 
 Reproduce (offline): `python benchmarks/ab_active_request.py`

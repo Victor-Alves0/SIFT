@@ -54,3 +54,34 @@ def run_agent(sift, client: Any, model: str, message: str, *,
             })
 
     raise RuntimeError(f"reached max_steps={max_steps} without a final answer")
+
+
+def run_agent_responses(sift, client: Any, model: str, message: str, *,
+                        max_steps: int = 12, verbose: bool = False,
+                        extra: dict | None = None) -> str:
+    """Same loop over the OpenAI **Responses API** (the successor to chat
+    completions). ``client`` just needs ``responses.create(...)``.
+    """
+    # Responses uses a flat tool shape (no "function" wrapper)
+    tools = [{"type": "function", "name": f["function"]["name"],
+              "description": f["function"]["description"],
+              "parameters": f["function"]["parameters"]}
+             for f in sift.openai_tools()]
+    items: list[dict] = [{"role": "user", "content": message}]
+
+    for _ in range(max_steps):
+        resp = client.responses.create(model=model, instructions=sift.system_prompt,
+                                       input=items, tools=tools, **(extra or {}))
+        calls = [o for o in resp.output if getattr(o, "type", None) == "function_call"]
+        if not calls:
+            return getattr(resp, "output_text", "") or ""
+        for call in calls:
+            items.append({"type": "function_call", "call_id": call.call_id,
+                          "name": call.name, "arguments": call.arguments})
+            result = sift.dispatch(call.name, call.arguments)
+            if verbose:
+                print(f"  ↳ {call.name}({call.arguments}) = {result[:160]}")
+            items.append({"type": "function_call_output", "call_id": call.call_id,
+                          "output": result})
+
+    raise RuntimeError(f"reached max_steps={max_steps} without a final answer")

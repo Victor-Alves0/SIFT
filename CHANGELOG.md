@@ -3,6 +3,63 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
+## [0.4.0] — 2026-07-02
+
+Production-readiness release: index persistence, result caps, observability,
+async, session memory — and SIFT as a custom search backend for Anthropic's
+native tool search (`defer_loading`).
+
+### Added
+- **Index persistence** (`Sift(index_cache="path.npz")`): document vectors are
+  cached with a content+model hash; warm start loads instead of re-embedding
+  (measured ~10× on 300 tools: 4.4s → 0.46s; the gap grows with catalogue size).
+- **Result cap** (`Sift(max_result_chars=100_000)`, on by default): tool results
+  and code-mode output sent to the model are truncated with a marker telling the
+  model how the owner can trim the tool (`set_response`). A 1 MB result no
+  longer lands in the context unannounced.
+- **Observability** (`Sift(observer=fn)`): `search` / `execute` / `run_code`
+  events with timing and error info; plus stdlib `logging` under the `"sift"`
+  logger. Observer exceptions never break the tool loop.
+- **Async surface**: `aexecute_tool` / `adispatch`; `async def` tools are awaited
+  natively (calling one through the sync path raises a helpful `TypeError`).
+- **Session memory** (`sift.session()` / `SiftSession`): discovered tools are
+  remembered per conversation and *promoted* to first-class function specs on
+  later turns (the `tool_reference`-expansion pattern) — no re-searching. Works
+  over scopes; promoted execution stays allow/deny-enforced.
+- **Anthropic native tool search integration**
+  (`adapters.anthropic.deferred_tools` / `tool_search_result` /
+  `run_agent_deferred`): the whole catalogue as `defer_loading: true` tools with
+  SIFT as the custom client-side search tool answering with `tool_reference`
+  blocks — hybrid semantic retrieval + active tool request where the built-in
+  variants offer regex/BM25.
+- **OpenAI Responses API driver** (`adapters.openai.run_agent_responses`).
+- **`examples=`** on `@tool`/`add_tool`: "how a user asks" phrasings, indexed on
+  the dense side for better discovery of ambiguous verbs.
+- **`replace=` on registration** — duplicate paths now raise instead of silently
+  shadowing (two imported MCP servers with a same-named tool used to overwrite
+  each other without a trace).
+- `py.typed` (PEP 561) — type checkers now see SIFT's hints. CI covers 3.13.
+
+### Changed
+- **Retrieval quality**: BM25 gained a light stemmer ("emails"~"email",
+  "deleted"~"delete"); all-zero BM25 ties now return *no* results instead of an
+  arbitrary tool; BM25 matches against lean path+description text while
+  embeddings get the enriched text (params + examples) — each signal plays to
+  its strength. Service entries no longer duplicate/leak sibling descriptions.
+- **`min_score` is now one scale across modes** (max embedding cosine when an
+  embedder exists) — a threshold tuned once applies to both `search_tools` and
+  `search_request`.
+- Query-side embeddings use the embedder's `embed_query` when available
+  (E5-style asymmetric models; a no-op for the default bge model).
+- A/B re-measured on the agent-facing view (functions only): raw query 79% vs
+  active request 100% top-1.
+
+### Security
+- **SubprocessSandbox no longer inherits the parent environment** — the child
+  gets a minimal allowlist (PATH etc.), so API keys never reach the process
+  running untrusted code. Child stderr is now captured and surfaced (tail) when
+  the sandbox dies unexpectedly, instead of being discarded.
+
 ## [0.3.0] — 2026-07-02
 
 Hardening release: a full type system at the LLM→tool boundary, scoped browsing,

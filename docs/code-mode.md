@@ -74,10 +74,13 @@ Runs the snippet in a **separate process** (`python -m sift._sandbox_child`):
 - The child holds **no** references to your tools or memory. When the snippet does
   `call(...)`/`search(...)`, the request is **proxied over stdio back to the
   parent**, which executes the real (trusted) tool and returns the filtered result.
+- The child gets a **scrubbed environment** (a minimal allowlist: PATH etc.) —
+  parent API keys and other secrets never reach the process running untrusted code.
 - A **wall-clock watchdog** kills the child on `timeout` — catching C-level hangs
   a Python line budget can't observe (e.g. `sum(range(10**9))`).
 - On Unix, **CPU and memory rlimits** (`cpu_seconds`, `memory_mb`) are applied.
-- The same AST/line-budget policy still runs inside the child.
+- The same AST/line-budget policy still runs inside the child. If the child dies
+  unexpectedly, the tail of its stderr is surfaced in the error for diagnosis.
 
 ```python
 SubprocessSandbox(timeout=10, max_lines=200_000, cpu_seconds=10, memory_mb=512)

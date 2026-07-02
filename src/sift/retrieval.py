@@ -13,9 +13,26 @@ from collections import Counter
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 
+# Light suffix stripping (an "s-stemmer"), so "emails"~"email", "reading"~"read",
+# "deleted"~"delete". Deliberately conservative — no Porter machinery — since tool
+# descriptions are short and over-stemming hurts precision on rare exact terms.
+_SUFFIXES = ("ing", "ies", "ed", "es", "s")
+
+
+def _stem(tok: str) -> str:
+    for suf in _SUFFIXES:
+        if tok.endswith(suf) and len(tok) - len(suf) >= 3:
+            tok = tok[: -len(suf)] + ("y" if suf == "ies" else "")
+            break
+    # normalise the final "e" so inflections meet their lemma ("deleted"->"delet"
+    # meets "delete"->"delet"; "creates"/"create" -> "creat")
+    if len(tok) >= 4 and tok.endswith("e"):
+        tok = tok[:-1]
+    return tok
+
 
 def tokenize(text: str) -> list[str]:
-    return _TOKEN.findall(text.lower())
+    return [_stem(t) for t in _TOKEN.findall(text.lower())]
 
 
 class BM25:
