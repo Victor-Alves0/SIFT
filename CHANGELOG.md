@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
+## [0.4.1] — 2026-07-02
+
+Performance/robustness patch on the subprocess sandbox (from an external
+report — verified before fixing; the "fastembed/onnxruntime in the child" part
+of the report was inaccurate since those are lazy, but the package-import
+overhead was real).
+
+### Fixed
+- **Sandbox child no longer imports the ``sift`` package.** It is launched as a
+  plain script and loads ``sandbox.py`` standalone, so ``gateway`` →
+  ``embeddings`` → numpy stay out of the child. Measured: child boot 0.43s →
+  0.22s, ``run_code`` round-trip 0.36s → 0.17s (~2×) — and the process running
+  untrusted code carries a smaller surface. Regression-tested (the child must
+  not have ``sift``/``numpy`` in ``sys.modules``).
+- ``dispatch("run_code")`` through a **scope** now respects ``max_result_chars``
+  like the ``Sift`` path (it bypassed the cap).
+- A child that dies at boot returns the JSON error with its stderr tail instead
+  of raising ``BrokenPipeError`` at the caller; the stderr drain thread is
+  joined before composing the error (no race on the tail).
+
 ## [0.4.0] — 2026-07-02
 
 Production-readiness release: index persistence, result caps, observability,

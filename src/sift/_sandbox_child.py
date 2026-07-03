@@ -4,13 +4,30 @@ Reads one config line ({"code", "max_lines"}) on stdin, runs the snippet via the
 shared ``sandbox.execute`` policy, and proxies each tool call back to the parent
 over stdio (the parent holds the real tools). The snippet's own stdout is captured
 by ``execute``; only the IPC JSON lines go to the real stdout.
+
+Deliberately does NOT import the ``sift`` package: the parent launches this file
+as a plain script, and ``sandbox.py`` is loaded standalone from the same
+directory. Importing ``sift`` would drag ``gateway`` → ``embeddings`` → numpy
+into every child (~2× the boot time per ``run_code`` call, measured) — and the
+process that runs untrusted code should carry the smallest possible surface.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
+from pathlib import Path
 
-from sift.sandbox import execute
+
+def _load_execute():
+    path = Path(__file__).resolve().with_name("sandbox.py")
+    spec = importlib.util.spec_from_file_location("_sift_sandbox_policy", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)   # sandbox.py is stdlib-only; no package import
+    return mod.execute
+
+
+execute = _load_execute()
 
 _OUT = sys.stdout   # captured before execute() redirects the snippet's stdout
 _IN = sys.stdin

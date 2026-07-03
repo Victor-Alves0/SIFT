@@ -87,7 +87,7 @@ class SiftScope:
             if name == "get_tool_schema":  # deprecated alias — scoped browse too
                 return self.get_tool_schema(args.get("path", "") or "")
             if name == "run_code":
-                return self.run_code(args["code"])
+                return self._sift._cap(self.run_code(args["code"]))  # same cap as Sift.dispatch
             return json.dumps({"error": f"unknown meta-tool {name!r}"})
         except Exception as exc:  # noqa: BLE001 - surfaced to the model as a tool result
             return json.dumps({"error": str(exc)}, ensure_ascii=False)

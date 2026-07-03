@@ -52,3 +52,38 @@ def test_subprocess_wallclock_timeout():
     s = _sift(SubprocessSandbox(timeout=2))
     out = json.loads(s.run_code("output = sum(range(1000000000))"))
     assert "error" in out and "timeout" in out["error"].lower()
+
+
+def test_child_is_lightweight():
+    """The sandbox child must not import the sift package (nor numpy) — it loads
+    sandbox.py standalone. A fat child doubles run_code's boot cost and widens
+    the surface of the process that runs untrusted code."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import sift
+
+    child = Path(sift.__file__).with_name("_sandbox_child.py")
+    probe = (
+        "import sys, runpy\n"
+        f"runpy.run_path(r'{child}', run_name='not_main')\n"   # module body only
+        "print('sift' in sys.modules, 'numpy' in sys.modules)\n"
+    )
+    r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["False", "False"], r.stdout
+
+
+def test_scope_run_code_respects_result_cap():
+    """dispatch('run_code') through a SCOPE is capped like the Sift path."""
+    s = Sift(retrieval="bm25", max_result_chars=200)
+
+    @s.tool("data.blob.get", description="Get a huge blob", params={}, returns=[])
+    def _b():
+        return {"data": "x" * 2000}
+
+    s.build_index()
+    view = s.scope(allow=["data.*"])
+    out = view.dispatch("run_code", {"code": "output = call('data.blob.get')['data']"})
+    assert len(out) < 400 and "truncated" in out

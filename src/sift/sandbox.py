@@ -184,8 +184,12 @@ class SubprocessSandbox:
         if os.name != "nt":
             kwargs["preexec_fn"] = self._preexec
 
+        # launch the child as a FILE, not -m sift._sandbox_child: -m would import
+        # the whole sift package (gateway -> embeddings -> numpy) into the child,
+        # doubling its boot time; the script loads sandbox.py standalone instead
+        child = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_sandbox_child.py")
         proc = subprocess.Popen(
-            [sys.executable, "-m", "sift._sandbox_child"],
+            [sys.executable, child],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=self._child_env(), text=True, bufsize=1, **kwargs,
         )
@@ -200,7 +204,8 @@ class SubprocessSandbox:
                     stderr_tail.append(line)
                     del stderr_tail[:-20]
 
-        threading.Thread(target=_drain, daemon=True).start()
+        drainer = threading.Thread(target=_drain, daemon=True)
+        drainer.start()
 
         killed = {"v": False}
 
@@ -228,6 +233,8 @@ class SubprocessSandbox:
                 except Exception as exc:  # tool error -> surface to the sandboxed code
                     proc.stdin.write(json.dumps({"ok": False, "error": str(exc)}) + "\n")
                 proc.stdin.flush()
+        except OSError:
+            pass   # child died mid-write (boot failure) -> the error path below
         finally:
             timer.cancel()
             with contextlib.suppress(Exception):
@@ -235,6 +242,7 @@ class SubprocessSandbox:
 
         if killed["v"]:
             return json.dumps({"error": "SandboxError: wall-clock timeout"})
+        drainer.join(timeout=0.5)   # let the drain thread flush the last lines
         detail = ("".join(stderr_tail).strip()[-500:]) or "no stderr output"
         return json.dumps({"error": f"SandboxError: sandbox child exited unexpectedly ({detail})"},
                           ensure_ascii=False)
