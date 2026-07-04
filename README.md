@@ -238,6 +238,29 @@ Async agents: `await sift.aexecute_tool(...)` / `await sift.adispatch(...)` —
 first, then serve; after the build, discovery/execution are read-only on SIFT's
 side and safe to call concurrently.
 
+## Cheap even with few (but heavy) tools — pin the hot ones
+
+The cost of a flat catalogue isn't the *number* of tools, it's the *schema size*
+(one Google Workspace MCP can be ~50k tokens). SIFT already fixes the bulk of
+that — the model sees ~430 tokens and pulls the one-line TOON of just the tool it
+needs. What's left is the discovery round-trip. For a handful of tools asked
+often, skip discovery entirely by **pinning** them:
+
+```python
+sift.pin("utils.time.now", "google_workspace.gmail.read")   # a few hot tools
+```
+
+Pinned tools are always-visible first-class specs — the model calls them in **one
+round-trip, no search** — while everything else stays discovery-only. Modeled on
+a zero-context "what's today's date?": 4 inferences (the trace below) → 2 when the
+time tool is pinned (~−44% tokens). And `search_tools(path="…")` now **falls back
+to a search** when the model guesses a category that doesn't exist, instead of
+wasting a round-trip on an error.
+
+> Don't force it: a tool whose parameters carry meaning (a timezone, a query)
+> must still get its schema before the model fills them — pinning removes only the
+> discovery hop, never the model's parameter decision.
+
 ## Session memory (no re-searching)
 
 Without memory, a model re-searches for the same tool every turn. A session

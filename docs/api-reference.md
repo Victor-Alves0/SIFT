@@ -33,6 +33,7 @@ Sift(*, registry=None, embedder=None, model_name=None, retrieval="hybrid",
 | `describe(node_path, description)` | `Sift` | set a category/service description |
 | `set_response(path, *, returns=None, transform=None)` | `Sift` | (re)configure projection on any tool |
 | `scope(*, allow=None, deny=None, allow_risky=True)` | `SiftScope` | a scoped view |
+| `pin(*paths)` | `Sift` | keep hot tools always-visible as first-class specs (no search round-trip) |
 | `build_index()` | `Sift` | **build the search index (call once, after registering)** |
 
 ### Discovery & execution

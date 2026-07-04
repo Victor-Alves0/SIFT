@@ -324,6 +324,19 @@ class Gateway:
         (e.g. ``set_response``) so stale schemas aren't served."""
         self._toon_cache.clear()
 
+    def browse(self, path: str, top_k: int = 3, *, predicate=None) -> str:
+        """Model-facing browse: list a hierarchy level, but if ``path`` isn't a
+        real category/service/function, treat the guess as a search query instead
+        of erroring (the model often guesses a plausible category name — this
+        saves the wasted round-trip). Empty path still lists categories."""
+        p = path.strip(". ")
+        try:
+            return self.get_tool_schema(p, predicate=predicate)
+        except KeyError:
+            if p:  # a guessed name that isn't a real node -> search on it
+                return self.search_compact(p, top_k, predicate=predicate)
+            raise
+
     def schema_dict(self, path: str) -> dict:
         """Structured view (for adapters that want JSON, not TOON)."""
         return self.reg.schema(path)

@@ -63,6 +63,28 @@ The facade method `sift.get_tool_schema(path)` does the same and is what powers
 the browse path internally (also kept as a deprecated `get_tool_schema` alias in
 `dispatch` for back-compat).
 
+**Browse falls back to search on a bad guess.** Models often guess a plausible
+category name that doesn't exist (`path="datetime"`). Instead of returning
+`unknown category`, `dispatch("search_tools", {"path": ...})` treats the guess as
+a query and returns matches — saving the wasted round-trip. Valid paths still
+list the level as normal.
+
+### Pinning hot tools (skip discovery entirely)
+
+For a few tools asked often, the discovery round-trip is pure overhead. `pin`
+them so they're always-visible first-class specs the model calls directly:
+
+```python
+sift.pin("utils.time.now", "google_workspace.gmail.read")
+```
+
+They appear in `openai_tools()`/`anthropic_tools()` named by their `.` → `__`
+path (`utils__time__now`); `dispatch`/`adispatch` route those names straight to
+execution, and scopes hide/deny them like any other tool. Keep the pinned set
+small (their schema is always in context) — the "keep your 3–5 most-used tools
+loaded" pattern. Pinning removes the *discovery* hop only; the model still fills
+the tool's parameters itself, so nothing about correctness changes.
+
 ## What comes back
 
 `search_tools` / `search_request` (the Python methods) return a list of

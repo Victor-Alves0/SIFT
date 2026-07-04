@@ -52,9 +52,10 @@ class SiftScope:
     def search_request_compact(self, domain: str, action: str, top_k: int = 3) -> str:
         return self._sift.gateway.search_request_compact(domain, action, top_k, predicate=self.allowed)
 
-    def get_tool_schema(self, path: str) -> str:
-        # scoped browse: denied tools are not even visible (no schema disclosure)
-        return self._sift.gateway.get_tool_schema(path, predicate=self.allowed)
+    def get_tool_schema(self, path: str, top_k: int = 3) -> str:
+        # scoped browse: denied tools are not even visible (no schema disclosure);
+        # a bad guess falls back to a scoped search
+        return self._sift.gateway.browse(path, top_k, predicate=self.allowed)
 
     def execute_tool(self, path: str, params: dict | None = None):
         if not self.allowed(path):
@@ -79,25 +80,41 @@ class SiftScope:
                 q = (args.get("q") or "").strip()
                 if q:
                     return self.search_compact(q, top_k)
-                return self.get_tool_schema(args.get("path", "") or "")  # scoped browse
+                return self.get_tool_schema(args.get("path", "") or "", top_k)  # scoped browse
             if name == "execute_tool":
                 if not self.allowed(args.get("path", "")):
                     return json.dumps({"error": f"tool {args.get('path')!r} is not allowed in this scope"})
                 return self._sift.dispatch("execute_tool", args)
             if name == "get_tool_schema":  # deprecated alias — scoped browse too
-                return self.get_tool_schema(args.get("path", "") or "")
+                return self.get_tool_schema(args.get("path", "") or "", top_k)
             if name == "run_code":
                 return self._sift._cap(self.run_code(args["code"]))  # same cap as Sift.dispatch
+            if "__" in name:  # pinned/promoted tool called directly — enforce scope
+                path = name.replace("__", ".")
+                if not self.allowed(path):
+                    return json.dumps({"error": f"tool {path!r} is not allowed in this scope"})
+                return self._sift.dispatch(name, args)
             return json.dumps({"error": f"unknown meta-tool {name!r}"})
         except Exception as exc:  # noqa: BLE001 - surfaced to the model as a tool result
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
     # ---- pass-throughs for wiring into a model ----
+    def _pin_visible(self, specs: list[dict], name_key) -> list[dict]:
+        """Drop pinned-tool specs the scope denies (their name is the __ path)."""
+        out = []
+        for spec in specs:
+            name = name_key(spec)
+            if "__" in name and not self.allowed(name.replace("__", ".")):
+                continue
+            out.append(spec)
+        return out
+
     def openai_tools(self) -> list[dict]:
-        return self._sift.openai_tools()
+        return self._pin_visible(self._sift.openai_tools(),
+                                 lambda s: s["function"]["name"])
 
     def anthropic_tools(self) -> list[dict]:
-        return self._sift.anthropic_tools()
+        return self._pin_visible(self._sift.anthropic_tools(), lambda s: s["name"])
 
     def code_tools(self) -> list[dict]:
         return self._sift.code_tools()

@@ -40,7 +40,7 @@ from .metatools import META_TOOL_NAMES, SYSTEM_PROMPT, tool_specs
 from .registry import Registry, ToolDef
 
 __all__ = ["Sift", "Registry", "ToolDef", "SearchResult", "SYSTEM_PROMPT", "tool_specs"]
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 _log = logging.getLogger("sift")
 
@@ -78,6 +78,7 @@ class Sift:
         self._index_cache = index_cache
         self._max_result_chars = max_result_chars
         self._observer = observer
+        self._pinned: list[str] = []   # hot tools kept always-visible (no search)
         self._gateway: Gateway | None = None
 
     # ---------------------------------------------------------- observability
@@ -139,6 +140,22 @@ class Sift:
         if self._gateway is not None:
             self._gateway.invalidate_schema_cache()
 
+    def pin(self, *paths: str) -> "Sift":
+        """Keep these tools ALWAYS visible as first-class function specs, so the
+        model calls them directly — no ``search_tools`` round-trip. Meant for a
+        few hot, small-schema tools asked often (the "keep your 3–5 most-used
+        tools loaded" pattern). Everything else stays discovery-only.
+
+        Pinned tools appear in ``openai_tools``/``anthropic_tools`` named with the
+        dotted path's ``.`` → ``__`` (LLM tool-name rules), and ``dispatch``
+        routes those names straight to execution.
+        """
+        for p in paths:
+            self.registry.tool(p)  # validate it exists (KeyError otherwise)
+            if p not in self._pinned:
+                self._pinned.append(p)
+        return self
+
     def scope(self, *, allow: list[str] | None = None, deny: list[str] | None = None,
               allow_risky: bool = True):
         """A scoped view that only sees/runs tools matching the allow/deny globs
@@ -192,6 +209,11 @@ class Sift:
                 res = await self.aexecute_tool(args["path"], args.get("params") or {})
                 self._emit("execute", {"path": args.get("path"), "ok": True, "ms": None})
                 return self._cap(json.dumps(res, ensure_ascii=False, default=str))
+            if "__" in name:  # pinned/promoted tool called directly by its flat name
+                path = name.replace("__", ".")
+                res = await self.aexecute_tool(path, args)
+                self._emit("execute", {"path": path, "ok": True, "ms": None})
+                return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             if name == "run_code":
                 return self._cap(await asyncio.to_thread(self.run_code, args["code"]))
         except Exception as exc:
@@ -226,8 +248,8 @@ class Sift:
                     out = self.gateway.search_request_compact(domain, action, top_k)
                 elif q:               # semantic discovery — TOON with schema inline
                     out = self.gateway.search_compact(q, top_k)
-                else:                 # browse a hierarchy level
-                    out = self.gateway.get_tool_schema(args.get("path", "") or "")
+                else:                 # browse a level (falls back to search on a bad guess)
+                    out = self.gateway.browse(args.get("path", "") or "", top_k)
                 self._emit("search", {"q": q, "domain": domain, "action": action,
                                       "ms": round((time.perf_counter() - t0) * 1000, 1)})
                 return out
@@ -237,10 +259,16 @@ class Sift:
                                         "ms": round((time.perf_counter() - t0) * 1000, 1)})
                 return out
             if name == "get_tool_schema":  # deprecated alias — folded into search_tools
-                return self.get_tool_schema(args.get("path", ""))
+                return self.gateway.browse(args.get("path", "") or "", int(args.get("top_k", 3)))
             if name == "execute_tool":
                 res = self.execute_tool(args["path"], args.get("params") or {})
                 self._emit("execute", {"path": args.get("path"), "ok": True,
+                                       "ms": round((time.perf_counter() - t0) * 1000, 1)})
+                return self._cap(json.dumps(res, ensure_ascii=False, default=str))
+            if "__" in name:  # a pinned/promoted tool called directly by its flat name
+                path = name.replace("__", ".")
+                res = self.execute_tool(path, args)   # args ARE the params here
+                self._emit("execute", {"path": path, "ok": True,
                                        "ms": round((time.perf_counter() - t0) * 1000, 1)})
                 return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             return json.dumps({"error": f"unknown meta-tool {name!r}"})
@@ -252,12 +280,22 @@ class Sift:
 
     # --------------------------------------------------------------- adapters
     def openai_tools(self) -> list[dict]:
-        """OpenAI/OpenRouter function-calling specs for the 2 meta-tools."""
-        return tool_specs()
+        """OpenAI/OpenRouter function-calling specs: the 2 meta-tools, plus one
+        first-class spec per pinned tool (callable without a search)."""
+        specs = tool_specs()
+        if self._pinned:
+            from .session import function_spec
+            specs += [function_spec(self.registry.tool(p)) for p in self._pinned]
+        return specs
 
     @property
     def system_prompt(self) -> str:
-        return SYSTEM_PROMPT
+        if not self._pinned:
+            return SYSTEM_PROMPT
+        from .session import promoted_name
+        names = ", ".join(promoted_name(p) for p in self._pinned)
+        return (SYSTEM_PROMPT + "\n\nSome tools are already available to call DIRECTLY "
+                f"(no search needed): {names}.")
 
     # --- code mode (orchestrate many tools in one turn) ---
     def code_tools(self) -> list[dict]:

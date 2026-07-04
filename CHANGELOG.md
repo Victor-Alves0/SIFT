@@ -3,6 +3,36 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
+## [0.5.0] — 2026-07-04
+
+Two safe, opt-in latency optimizations for the "cheap even with few tools"
+case — where the cost is a heavy schema and the round-trips, not the tool count.
+Neither touches the quality path (a tool with required params still gets its
+schema before the model fills them).
+
+### Added
+- **Pinned tools** (`sift.pin("utils.time.now", ...)`): keep a few hot,
+  small-schema tools always visible as first-class function specs, so the model
+  calls them **directly — no `search_tools` round-trip**. Everything else stays
+  discovery-only. Pinned tools appear in `openai_tools`/`anthropic_tools` named
+  by their `.` → `__` path; `dispatch`/`adispatch` route those names straight to
+  execution, and scopes hide/deny them like any other tool. This is the "keep
+  your 3–5 most-used tools loaded" pattern, made first-class.
+
+### Changed
+- **Browse now falls back to search on a bad guess.** When the model calls
+  `search_tools(path="datetime")` and there is no such category/service, SIFT
+  treats the guess as a query instead of returning `unknown category` — saving
+  the wasted round-trip the error used to cost. Valid paths still list the level.
+
+Modeled cost on a zero-context "what's today's date?" (chars≈tokens/4): the
+image's 4-inference trace (bad browse guess → search → execute → answer) →
+**3 inferences with browse-fallback (~−26%)** → **2 inferences when the time
+tool is pinned (~−44%)**. Honest note: a tool whose parameters carry meaning
+(e.g. the timezone here) must NOT be auto-executed at search time — that would
+silently return the wrong answer. Pinning keeps the model's parameter decision
+intact while removing only the discovery round-trip.
+
 ## [0.4.1] — 2026-07-02
 
 Performance/robustness patch on the subprocess sandbox (from an external

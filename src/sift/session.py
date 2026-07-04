@@ -26,6 +26,16 @@ def promoted_name(path: str) -> str:
     return path.replace(".", "__")
 
 
+def function_spec(tool) -> dict:
+    """OpenAI-style function spec for a concrete tool (used by pinned tools and
+    session promotion): named by its ``.`` → ``__`` path, risk flagged."""
+    return {"type": "function", "function": {
+        "name": promoted_name(tool.path),
+        "description": tool.description + (" [risk: confirm first]" if tool.risk else ""),
+        "parameters": input_schema_for(tool),
+    }}
+
+
 class SiftSession:
     """Wraps a ``Sift`` or ``SiftScope``; same ``dispatch`` contract."""
 
@@ -49,14 +59,15 @@ class SiftSession:
         discovered tool (capped at ``max_promoted``, most recent kept)."""
         specs = list(self._target.openai_tools())
         reg = self._registry()
+        pinned = set(getattr(self._sift(), "_pinned", []))
         for path in list(self._discovered)[-self._max:]:
-            tool = reg.tool(path)
-            specs.append({"type": "function", "function": {
-                "name": promoted_name(path),
-                "description": tool.description + (" [risk: confirm first]" if tool.risk else ""),
-                "parameters": input_schema_for(tool),
-            }})
+            if path in pinned:
+                continue  # already a first-class spec via pin(); don't duplicate
+            specs.append(function_spec(reg.tool(path)))
         return specs
+
+    def _sift(self):
+        return getattr(self._target, "_sift", self._target)  # Sift or SiftScope's parent
 
     @property
     def system_prompt(self) -> str:
