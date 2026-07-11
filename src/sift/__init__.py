@@ -40,7 +40,7 @@ from .metatools import META_TOOL_NAMES, SYSTEM_PROMPT, tool_specs
 from .registry import Registry, ToolDef
 
 __all__ = ["Sift", "Registry", "ToolDef", "SearchResult", "SYSTEM_PROMPT", "tool_specs"]
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 _log = logging.getLogger("sift")
 
@@ -87,7 +87,8 @@ class Sift:
                  reranker=None, min_score: float = 0.0, sandbox=None,
                  index_cache: str | None = None, max_result_chars: int | None = 100_000,
                  observer: Callable[[str, dict], None] | None = None,
-                 on_risky: Callable[[str, dict], bool] | None = None) -> None:
+                 on_risky: Callable[[str, dict], bool] | None = None,
+                 on_result: Callable[[str, dict], dict] | None = None) -> None:
         self.registry = registry or Registry()
         self._embedder = embedder
         self._model_name = model_name
@@ -101,6 +102,9 @@ class Sift:
         # human-in-the-loop guard for risk=True tools: on_risky(path, args) -> bool;
         # False (or raising) blocks the execution. Confirm-before-send, made a hook.
         self._on_risky = on_risky
+        # global post-filter over every tool result (after projection) — the place
+        # for prompt-injection scrubbing of untrusted tool output: (path, result) -> result
+        self._on_result = on_result
         self._pinned: list[str] = []   # hot tools kept always-visible (no search)
         self.meta: dict = {}           # free-form integrator metadata (yours to use)
         self._gateway: Gateway | None = None
@@ -127,7 +131,8 @@ class Sift:
     def tool(self, path: str, *, description: str, params: dict | None = None,
              returns: list[str] | None = None, risk: bool = False,
              transform: Callable | None = None, examples: list[str] | None = None,
-             replace: bool = False) -> Callable:
+             replace: bool = False, cacheable: bool = False, cache_ttl: float = 60.0,
+             timeout: float | None = None) -> Callable:
         """Decorator: register a function as a tool at ``path``.
 
         ``examples`` are optional "how a user asks for this" phrasings — they are
@@ -136,23 +141,31 @@ class Sift:
         When ``params`` is omitted, the spec is DERIVED from the function's
         signature (annotations → types, defaults → optional) — so a bare
         ``def add(a: int, b: int)`` is callable, not a silent trap.
+
+        ``cacheable=True`` memoizes results per (path, params) for ``cache_ttl``
+        seconds — for idempotent reads asked repeatedly. ``timeout`` caps one
+        execution's wall-clock (see gateway docs for the honest semantics).
         """
         def deco(fn: Callable[..., dict]) -> Callable[..., dict]:
             from .registry import derive_params
             spec = params if params is not None else derive_params(fn)
             self.registry.add(ToolDef(path, description, spec, returns or [],
-                                      risk, fn, transform, examples or []), replace=replace)
+                                      risk, fn, transform, examples or [],
+                                      cacheable, cache_ttl, timeout), replace=replace)
             return fn
         return deco
 
     def add_tool(self, path: str, fn: Callable[..., dict], *, description: str,
                  params: dict | None = None, returns: list[str] | None = None,
                  risk: bool = False, transform: Callable | None = None,
-                 examples: list[str] | None = None, replace: bool = False) -> "Sift":
+                 examples: list[str] | None = None, replace: bool = False,
+                 cacheable: bool = False, cache_ttl: float = 60.0,
+                 timeout: float | None = None) -> "Sift":
         from .registry import derive_params
         spec = params if params is not None else derive_params(fn)
         self.registry.add(ToolDef(path, description, spec, returns or [],
-                                  risk, fn, transform, examples or []), replace=replace)
+                                  risk, fn, transform, examples or [],
+                                  cacheable, cache_ttl, timeout), replace=replace)
         return self
 
     def describe(self, node_path: str, description: str) -> "Sift":
@@ -203,9 +216,14 @@ class Sift:
         if self._embedder is None and self._retrieval != "bm25":
             from .embeddings import FastEmbedder
             self._embedder = FastEmbedder(self._model_name)
+        # a REBUILD (tools added after a first build) reuses vectors of unchanged
+        # texts — incremental, so growing a live catalogue doesn't re-embed it all
+        reuse = getattr(self._gateway, "_text_vectors", None) if self._gateway else None
         self._gateway = Gateway(self.registry, self._embedder, retrieval=self._retrieval,
                                 reranker=self._reranker, min_score=self._min_score,
-                                on_risky=self._on_risky)
+                                on_risky=self._on_risky, on_result=self._on_result)
+        if reuse:
+            self._gateway._reuse_vectors = reuse
         self._gateway.build_index(cache=self._index_cache)
         return self
 
@@ -289,8 +307,12 @@ class Sift:
                     out = self.gateway.search_compact(q, top_k)
                 else:                 # browse a level (falls back to search on a bad guess)
                     out = self.gateway.browse(args.get("path", "") or "", top_k)
-                self._emit("search", {"q": q, "domain": domain, "action": action,
-                                      "ms": round((time.perf_counter() - t0) * 1000, 1)})
+                event = {"q": q, "domain": domain, "action": action,
+                         "ms": round((time.perf_counter() - t0) * 1000, 1)}
+                if q or domain or action:   # catalogue-gap signal (see sift.quality)
+                    event["hits"] = sum(1 for ln in out.splitlines()
+                                        if ln and not ln.startswith("#"))
+                self._emit("search", event)
                 return out
             if name == "run_code":
                 out = self._cap(self.run_code(args["code"]))
@@ -321,7 +343,23 @@ class Sift:
                         "ms": round((time.perf_counter() - t0) * 1000, 1)})
             # an unknown path gets the recovery hint — models retry instead of quitting
             hint = PATH_HINT if isinstance(exc, KeyError) else None
-            return _error_json(msg, hint)
+            return self._error_with_schema(exc, msg, hint, args)
+
+    def _error_with_schema(self, exc: Exception, msg: str, hint: str | None,
+                           args: dict) -> str:
+        """Param errors carry the tool's one-line schema, so the model fixes the
+        call in ONE retry instead of guessing what the tool expects."""
+        body: dict = {"error": msg}
+        if hint:
+            body["hint"] = hint
+        if isinstance(exc, ValueError) and "parameter" in msg:
+            try:
+                path = (args.get("path") or "").strip()
+                if path:
+                    body["schema"] = self.gateway.get_tool_schema(path)
+            except Exception:   # schema lookup must never mask the real error
+                pass
+        return json.dumps(body, ensure_ascii=False)
 
     # --------------------------------------------------------------- adapters
     def openai_tools(self) -> list[dict]:

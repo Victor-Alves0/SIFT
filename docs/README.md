@@ -38,6 +38,9 @@ sift.execute_tool("google_workspace.gmail.read", {"m": 1})
 | [Code mode & sandbox](code-mode.md) | `run_code`, the pluggable sandbox backends, the security model |
 | [Importing ecosystems](importing.md) | OpenAPI specs and MCP servers → hierarchy nodes, binding executors |
 | [Deployment](deployment.md) | Run SIFT as an MCP server or an OpenAPI HTTP server; Docker; auth |
+| [Catalog quality](quality.md) | `lint()`, retrieval self-test, gap tracking, pin suggestions |
+| [Security](security.md) | The layer model, prompt injection honestly, sandbox isolation recipes |
+| [Cookbook: Google Workspace](cookbook-google-workspace.md) | A heavy 50k-token MCP behind SIFT, end to end |
 | [Architecture](architecture.md) | How the registry, gateway, TOON codec and index fit together |
 | [API reference](api-reference.md) | The `Sift` facade and the key classes/functions |
 

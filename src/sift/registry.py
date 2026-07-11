@@ -153,6 +153,9 @@ class ToolDef:
     fn: Callable[..., dict] | None = None
     transform: Callable[[Any], Any] | None = None  # post-process the raw result
     examples: list[str] = field(default_factory=list)  # "how a user asks" — indexed
+    cacheable: bool = False        # idempotent read: same path+params within ttl
+    cache_ttl: float = 60.0        # seconds a cached result stays fresh
+    timeout: float | None = None   # wall-clock cap for one execution (see gateway)
 
     def __post_init__(self) -> None:
         # store params canonically as Param objects regardless of input form

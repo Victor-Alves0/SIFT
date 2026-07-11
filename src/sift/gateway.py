@@ -36,7 +36,7 @@ class SearchResult:
 class Gateway:
     def __init__(self, registry: Registry, embedder: Embedder | None = None, *,
                  retrieval: str = "hybrid", reranker=None, min_score: float = 0.0,
-                 on_risky=None) -> None:
+                 on_risky=None, on_result=None) -> None:
         if retrieval not in ("hybrid", "embedding", "bm25"):
             raise ValueError("retrieval must be 'hybrid', 'embedding' or 'bm25'")
         if retrieval in ("hybrid", "embedding") and embedder is None:
@@ -48,6 +48,10 @@ class Gateway:
         # human-in-the-loop guard: called before a risk=True tool runs, with the
         # prepared args; return False (or raise) to block. None = risk tools run.
         self.on_risky = on_risky
+        # global post-filter applied to EVERY tool result after projection —
+        # e.g. prompt-injection scrubbing of untrusted tool output. (path, result) -> result
+        self.on_result = on_result
+        self._result_cache: dict = {}   # (path, params-json) -> (expiry, result)
         # Relevance floor; below it, search returns nothing. Same scale in both
         # search modes (see _passes_floor): max embedding cosine when an embedder
         # exists, else "any BM25 term matched".
@@ -72,13 +76,22 @@ class Gateway:
         self._entries = entries
         if self.retrieval in ("hybrid", "embedding"):
             self._vectors = self._load_or_embed([e.text for e in entries], cache)
+            # remember text->vector so a REBUILD (tools added later) only embeds
+            # what actually changed — incremental, not from scratch
+            self._text_vectors = dict(zip((e.text for e in entries), self._vectors))
         if self.retrieval in ("hybrid", "bm25"):
             self._bm25 = BM25([e.lex for e in entries])
         return self
 
     def _load_or_embed(self, texts: list[str], cache: "str | None"):
         if cache is None:
-            return self.embedder.embed(texts)
+            # incremental path: vectors carried over from a previous build (set
+            # via reuse_vectors) are kept; only new/changed texts get embedded
+            known = dict(getattr(self, "_reuse_vectors", None) or {})
+            missing = [t for t in dict.fromkeys(texts) if t not in known]
+            if missing:
+                known.update(zip(missing, self.embedder.embed(missing)))
+            return [known[t] for t in texts]
         import hashlib
         from pathlib import Path
 
@@ -352,25 +365,41 @@ class Gateway:
 
         if tool.fn is None:
             raise RuntimeError(f"tool {path!r} has no executor bound (use @sift.tool or sift.bind)")
+        cached = self._cache_get(tool, path, args)
+        if cached is not None:
+            return cached
         self._check_risky(path, tool, args)
-        raw = tool.fn(**args)
+        if tool.timeout:
+            raw = _run_with_timeout(tool.fn, args, tool.timeout, path)
+        else:
+            raw = tool.fn(**args)
         if _isawaitable(raw):
             raw.close()  # don't leak the un-awaited coroutine
             raise TypeError(f"tool {path!r} is async — call it via aexecute_tool/adispatch")
-        return self._finish(path, tool, raw)
+        return self._finish(path, tool, args, raw)
 
     async def aexecute_tool(self, path: str, params: dict | None = None):
         """Async twin of ``execute_tool`` — awaits ``async def`` tools natively
         (sync tools are called inline; offload them yourself if they block)."""
+        import asyncio
         tool = self.reg.tool(path)
         args = self._prepare_args(tool.params, params or {})
         if tool.fn is None:
             raise RuntimeError(f"tool {path!r} has no executor bound (use @sift.tool or sift.bind)")
+        cached = self._cache_get(tool, path, args)
+        if cached is not None:
+            return cached
         self._check_risky(path, tool, args)
         raw = tool.fn(**args)
         if _isawaitable(raw):
-            raw = await raw
-        return self._finish(path, tool, raw)
+            if tool.timeout:
+                try:
+                    raw = await asyncio.wait_for(raw, tool.timeout)
+                except asyncio.TimeoutError:
+                    raise TimeoutError(f"tool {path!r} exceeded its {tool.timeout}s timeout") from None
+            else:
+                raw = await raw
+        return self._finish(path, tool, args, raw)
 
     def _check_risky(self, path: str, tool, args: dict) -> None:
         if tool.risk and self.on_risky is not None:
@@ -378,14 +407,33 @@ class Gateway:
                 raise PermissionError(
                     f"risky tool {path!r} was not confirmed (blocked by the on_risky guard)")
 
+    # -------- opt-in result cache (idempotent reads asked repeatedly) --------
     @staticmethod
-    def _finish(path: str, tool, raw):
+    def _cache_key(path: str, args: dict) -> str:
+        return path + "\x00" + json.dumps(args, sort_keys=True, default=str)
+
+    def _cache_get(self, tool, path: str, args: dict):
+        if not tool.cacheable:
+            return None
+        import time
+        hit = self._result_cache.get(self._cache_key(path, args))
+        if hit is not None and hit[0] > time.monotonic():
+            return hit[1]
+        return None
+
+    def _finish(self, path: str, tool, args: dict, raw):
         if not isinstance(raw, dict):
             raise TypeError(f"executor for {path!r} must return a dict, got {type(raw).__name__}")
         # owner-configured projection: transform (reshape) then field whitelist
         result = tool.transform(raw) if tool.transform is not None else raw
         if tool.returns and isinstance(result, dict):
             result = {k: result[k] for k in tool.returns if k in result}
+        if self.on_result is not None:   # global post-filter (e.g. injection scrub)
+            result = self.on_result(path, result)
+        if tool.cacheable:
+            import time
+            self._result_cache[self._cache_key(path, args)] = (
+                time.monotonic() + tool.cache_ttl, result)
         return result
 
     @staticmethod
@@ -409,6 +457,32 @@ class Gateway:
 
 _TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
 _FALSE_STRINGS = frozenset({"false", "0", "no", "off", ""})
+
+
+def _run_with_timeout(fn, args: dict, timeout: float, path: str):
+    """Run a SYNC tool with a wall-clock cap. Honest semantics: Python threads
+    can't be force-killed — on timeout the caller gets a TimeoutError and moves
+    on, while the orphaned call finishes in the background (daemon thread) and
+    its result is discarded. Use it to unblock the agent loop, not to stop the
+    underlying work."""
+    import threading
+    box: dict = {}
+
+    def _target():
+        try:
+            box["value"] = fn(**args)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller
+            box["error"] = exc
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"tool {path!r} exceeded its {timeout}s timeout "
+                           "(the call keeps running in the background; its result is discarded)")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def _coerce(typ: str, value):

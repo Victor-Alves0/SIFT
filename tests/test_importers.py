@@ -16,7 +16,8 @@ def test_compress_params():
     }
     out = compress_params(schema)
     assert out["q"] == {"type": "string", "required": True, "default": "is:unread", "desc": "the query"}
-    assert out["limit"] == {"type": "number", "required": False, "default": "10", "desc": ""}
+    # integer stays integer since the full boundary type system (was flattened to number)
+    assert out["limit"] == {"type": "integer", "required": False, "default": "10", "desc": ""}
 
 
 def test_destructive_heuristic():

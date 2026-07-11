@@ -99,6 +99,25 @@ A missing `path` is named as such (never misreported as a permission problem),
 and typed-param failures are structured (`parameter 'a': expected an integer,
 got 'x'`) so the model can retry with a corrected value.
 
+## Result caching and per-tool timeouts
+
+```python
+@sift.tool("mail.inbox.list", description="List the inbox",
+           cacheable=True, cache_ttl=30,   # idempotent read: memoize per (path, params)
+           timeout=10)                     # wall-clock cap for one execution
+def list_inbox(): ...
+```
+
+- **`cacheable`** (opt-in): the same call within `cache_ttl` seconds returns the
+  cached (already projected) result — repeated reads in a conversation cost one
+  real execution. Only for idempotent reads; never cache writes.
+- **`timeout`** — honest semantics: Python threads can't be force-killed, so on
+  timeout the *caller* gets a clean `TimeoutError` and moves on, while the
+  orphaned call finishes on a daemon thread and its result is discarded. Use it
+  to unblock the agent loop, not to stop the underlying work. (`async def` tools
+  get real `asyncio.wait_for` cancellation via `aexecute_tool`.) Note this is
+  separate from the code-mode watchdog, which pauses during tool calls.
+
 ## Risky tools: the `on_risky` confirmation hook
 
 `risk=True` marks a tool; `on_risky` decides what "risky" means at runtime — the

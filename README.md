@@ -85,6 +85,22 @@ sift.search_request(domain="calendar", action="create an event tomorrow at 3pm")
 
 ## Benchmarks
 
+**Independent dataset — MCP-tools needle (2,797 tools, 308 servers).** SIFT
+evaluated on the public catalogue released with the
+[MCP-Zero paper](https://arxiv.org/abs/2506.01056) — not a catalogue we built.
+Discovery must surface each tool from the full 2,797-tool index, using **local**
+embeddings (default bge-small, no API; 63 ms/search on CPU):
+
+| condition | top-1 | top-5 |
+|---|---:|---:|
+| query-only | 96.2% | 99.9% |
+| **active request (domain + action)** | **99.5%** | 99.9% |
+
+At this scale the flat schema payload is ~115k tokens per request; SIFT's fixed
+surface is ~0.7k (**~170× smaller**). Caveat & method in
+[benchmarks/RESULTS.md](benchmarks/RESULTS.md); reproduce with
+`python benchmarks/mcpzero_needle.py`.
+
 **SIFT vs the flat catalogue** (what most tool/MCP setups do today — every schema
 injected every turn). Agent-level runs, `deepseek/deepseek-v4-flash` via OpenRouter,
 prompt caching on, 12 tasks, catalogue padded with distractors
@@ -311,6 +327,28 @@ run_agent_deferred(sift, anthropic.Anthropic(), "claude-opus-4-8",
                    "what's my last email?", keep=("google_workspace.gmail.read",))
 # or wire it yourself: deferred_tools(sift) + tool_search_result(sift, id, args)
 ```
+
+## Catalog quality, made executable
+
+"Write clear tool descriptions" is advice; `sift.quality` is a linter:
+
+```python
+from sift import quality
+quality.lint(sift).format()      # missing/short descs, undocumented params,
+                                 # NEAR-DUPLICATE tools, fragmented categories
+quality.selftest(sift)           # every tool findable by its own phrasing?
+tracker = quality.GapTracker()   # attach as observer=; then:
+tracker.gaps()                   # user needs that matched NO tool
+tracker.suggest_pins()           # hot tools worth pin()ning
+```
+
+## Security
+
+Layered and honest: projection + result caps + a global `on_result` scrub hook +
+scoping + `risk`/`on_risky` confirmation + sanitized imports + the subprocess
+sandbox (scrubbed env, rlimits). What each layer does and doesn't guarantee —
+including prompt injection via tool results and via imported catalogues — is in
+[docs/security.md](docs/security.md).
 
 ## Hybrid retrieval & reranking
 

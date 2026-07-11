@@ -24,12 +24,13 @@ Sift(*, registry=None, embedder=None, model_name=None, retrieval="hybrid",
 | `max_result_chars` | `100_000` | cap on results sent to the model (`None` disables) |
 | `observer` | `None` | `callable(event, data)` — search/execute/run_code telemetry |
 | `on_risky` | `None` | `callable(path, args) -> bool` — confirm hook before any `risk=True` execution |
+| `on_result` | `None` | `callable(path, result) -> result` — global post-filter (e.g. injection scrub) |
 
 ### Registration
 
 | Method | Returns | Notes |
 |---|---|---|
-| `@sift.tool(path, *, description, params=None, returns=None, risk=False, transform=None)` | decorator | register a function as a tool |
+| `@sift.tool(path, *, description, params=None, returns=None, risk=False, transform=None, examples=None, replace=False, cacheable=False, cache_ttl=60, timeout=None)` | decorator | register a function as a tool |
 | `add_tool(path, fn, *, description, params=None, returns=None, risk=False, transform=None)` | `Sift` | register an existing function (chainable) |
 | `describe(node_path, description)` | `Sift` | set a category/service description |
 | `set_response(path, *, returns=None, transform=None)` | `Sift` | (re)configure projection on any tool |
@@ -103,7 +104,21 @@ routes promoted names (`path` with `.` → `__`) straight to execution;
 | `run_agent_deferred(sift, client, model, message, *, keep=())` | full loop over the deferred catalogue |
 | `run_agent(sift, client, model, message)` | classic 2-meta-tool loop |
 
-`sift.adapters.openai` additionally provides `run_agent_responses` (Responses API).
+`sift.adapters.openai` additionally provides `run_agent_responses` (Responses API);
+`sift.adapters.gemini` provides `gemini_tools` / `run_agent` (native Gemini SDK).
+
+## Quality toolkit (`sift.quality`)
+
+| Function | Purpose |
+|---|---|
+| `lint(sift, *, dup_threshold=0.92, ...)` | static catalogue checks → `LintReport` (errors/warnings/format) |
+| `selftest(sift, *, top_k=5)` | each tool findable by its own description/examples → failures |
+| `GapTracker()` | observer: `gaps()` (searches matching nothing) + `suggest_pins()` |
+
+## Observability (`sift.otel`)
+
+`otel_observer(tracer=None)` builds an observer that emits an OpenTelemetry span
+per `search`/`execute`/`run_code` event (`[otel]` extra).
 
 ## `SearchResult`
 

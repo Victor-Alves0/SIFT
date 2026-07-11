@@ -1,4 +1,32 @@
-# SIFT benchmark — SIFT vs the flat-catalogue baseline
+# SIFT benchmarks
+
+## Independent dataset: MCP-tools needle (from the MCP-Zero paper)
+
+The first SIFT evaluation on a catalogue we did NOT construct: the public
+MCP-tools dataset released with [MCP-Zero](https://arxiv.org/abs/2506.01056)
+(**308 servers / 2,797 tools**, the full catalogue in one index). For every tool,
+discovery must surface it ("needle") from all 2,797 — query-only uses the tool's
+description; the active request adds the server as ``domain``:
+
+| condition | top-1 | top-5 |
+|---|---:|---:|
+| query-only (tool description) | 96.2% | 99.9% |
+| **active request (domain + action)** | **99.5%** | 99.9% |
+
+- **Local embeddings, no API**: default `bge-small-en-v1.5` (384-dim, on-device)
+  + hybrid BM25 — where MCP-Zero's routing uses OpenAI `text-embedding-3-large`
+  (3072-dim, paid API). 5,594 searches in 354s ≈ **63 ms/search** on CPU.
+- **Context economics at this scale**: the flat schema payload of the catalogue
+  is ~115k tokens per request; SIFT's fixed surface is ~0.7k (**~170× smaller**).
+- Honest caveat: this is a *self-retrieval* needle test (the request is the
+  tool's own documentation — mirroring the paper's premise that model-authored
+  requests align with tool docs). It is not a replication of their
+  LLM-in-the-loop runs.
+
+Reproduce: `python benchmarks/mcpzero_needle.py <dataset.json>` (download
+instructions in the script header).
+
+## SIFT vs the flat-catalogue baseline
 
 **Question:** what does hierarchical, search-first discovery (SIFT, 2 meta-tools)
 buy you over the approach most tool/MCP setups use today — every tool dumped into

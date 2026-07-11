@@ -20,23 +20,34 @@ def _attr(obj, key: str, default=None):
     return getattr(obj, key, default)
 
 
-def tools_from_listing(listing: Iterable, *, category: str, service: str) -> list[ToolDef]:
+def tools_from_listing(listing: Iterable, *, category: str, service: str,
+                       sanitize: bool = True) -> list[ToolDef]:
     """Convert MCP tool descriptors (dicts or objects) into ToolDefs.
 
     Each descriptor needs ``name``, ``description`` and ``inputSchema``.
+    ``sanitize`` (default on) scrubs third-party descriptions before they enter
+    your index and the model's context — control chars stripped, whitespace
+    collapsed (multi-line "instructions" flatten), length capped. Hygiene, not a
+    guarantee: see docs/security.md.
     """
+    from ._common import sanitize_text
     defs: list[ToolDef] = []
     for t in listing:
         name = _attr(t, "name")
         if not name:
             continue
-        desc = (_attr(t, "description") or "")[:200]
+        desc = _attr(t, "description") or ""
+        desc = sanitize_text(desc, max_len=200) if sanitize else desc[:200]
         schema = _attr(t, "inputSchema") or _attr(t, "input_schema") or {}
+        params = compress_params(schema)
+        if sanitize:
+            for p in params.values():
+                p["desc"] = sanitize_text(p["desc"], max_len=150)
         defs.append(
             ToolDef(
                 path=f"{category}.{service}.{name}",
                 description=desc,
-                params=compress_params(schema),
+                params=params,
                 returns=[],  # MCP tools don't declare a response whitelist
                 risk=looks_destructive(name),
             )

@@ -9,7 +9,7 @@ import re
 from typing import Callable, Iterator
 
 from ..registry import Registry, ToolDef
-from ._common import _clean, _compact_type
+from ._common import _compact_type
 
 _HTTP_METHODS = ("get", "post", "put", "delete", "patch")
 _WRITE_METHODS = ("post", "put", "delete", "patch")
@@ -26,11 +26,12 @@ def _params_from_operation(op: dict) -> dict[str, dict]:
         if not name:
             continue
         schema = p.get("schema", {}) or {}
+        from ._common import sanitize_text
         out[name] = {
             "type": _compact_type(schema.get("type", "string")),
             "required": bool(p.get("required")),
             "default": "" if schema.get("default") is None else str(schema.get("default")),
-            "desc": _clean(p.get("description", "")),
+            "desc": sanitize_text(p.get("description", ""), max_len=150),
         }
     if "requestBody" in op:
         out["body"] = {
@@ -50,7 +51,9 @@ def _iter_operations(spec: dict, category: str, service: str | None) -> Iterator
             tags = op.get("tags") or []
             svc = service or (_slug(tags[0]) if tags else "api")
             op_id = op.get("operationId") or _slug(f"{method}_{route}")
-            desc = (op.get("summary") or op.get("description") or op_id)[:200]
+            from ._common import sanitize_text
+            desc = sanitize_text(op.get("summary") or op.get("description") or op_id,
+                                 max_len=200)
             td = ToolDef(
                 path=f"{category}.{svc}.{_slug(op_id)}",
                 description=desc,

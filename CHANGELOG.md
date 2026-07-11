@@ -3,6 +3,46 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
+## [0.7.0] — 2026-07-11
+
+Evidence + quality release: SIFT evaluated on the public MCP-Zero dataset, an
+executable catalog-quality toolkit, and a hardened execution layer.
+
+### Added
+- **Independent-dataset benchmark** (`benchmarks/mcpzero_needle.py`): needle-in-
+  a-haystack over the public MCP-tools catalogue from the MCP-Zero paper (308
+  servers / 2,797 tools) — the first SIFT evaluation on a dataset we didn't
+  construct. See benchmarks/RESULTS.md for numbers (local bge-small embeddings,
+  no API).
+- **Catalog quality toolkit** (`sift.quality`): `lint()` (missing/short/long
+  descriptions, undocumented params, near-duplicate tools via the built vectors,
+  fragmented categories), `selftest()` (every tool must be findable with its own
+  description/examples — failures name who beat it), and `GapTracker` (observer:
+  `gaps()` = searches that matched nothing; `suggest_pins()` = hot tools worth
+  pinning).
+- **Result cache** (`@tool(cacheable=True, cache_ttl=60)`): opt-in memoization
+  of idempotent reads per (path, params).
+- **Per-tool timeout** (`@tool(timeout=10)`): the caller gets a clean
+  `TimeoutError` and moves on (honest semantics documented — Python threads
+  can't be killed; async tools get real cancellation).
+- **Incremental rebuild**: `build_index()` after adding tools re-embeds only
+  new/changed texts instead of the whole catalogue.
+- **Schema-in-error**: a parameter error now carries the tool's TOON line
+  (`"schema": ...`) so the model fixes the call in one retry.
+- **`on_result` hook** (`Sift(on_result=fn)`): global post-filter over every
+  tool result after projection — the place for prompt-injection scrubbing.
+- **Importer sanitization** (default on): third-party MCP/OpenAPI descriptions
+  are scrubbed (control chars, collapsed whitespace, length cap) before entering
+  the index; `sanitize=False` opts out. `compress_params` now survives the
+  malformed schemas found in real MCP catalogues, and maps
+  integer/boolean/array/object types faithfully (was flattened to number/string).
+- **Native Gemini adapter** (`adapters.gemini`, `[gemini]` extra) and an
+  **OpenTelemetry observer bridge** (`sift.otel.otel_observer`, `[otel]` extra).
+- **Docs**: security model (`docs/security.md` — injection honestly, container/
+  seccomp recipe), catalog quality guide, and a Google Workspace cookbook (the
+  50k-token MCP case end to end).
+- Search observer events now include ``hits`` (feeds `GapTracker`).
+
 ## [0.6.0] — 2026-07-11
 
 DX/robustness release driven by field feedback from an integrator building a

@@ -83,6 +83,21 @@ from sift.adapters.openai import run_agent_responses
 run_agent_responses(sift, OpenAI(), "gpt-4o-mini", "what's my last email?")
 ```
 
+## Native Gemini
+
+Gemini also works through its OpenAI-compatible endpoint, but the native SDK
+(`google-genai`) speaks `function_declarations`/`function_response`:
+
+```python
+from google import genai
+from sift.adapters.gemini import run_agent
+
+run_agent(sift, genai.Client(), "gemini-2.0-flash", "what's my last email?")
+# raw specs: sift.adapters.gemini.gemini_tools(sift)  — includes pinned tools
+```
+
+Requires the `[gemini]` extra.
+
 ## Session memory (any provider)
 
 `sift.session()` remembers which tools discovery surfaced during a conversation

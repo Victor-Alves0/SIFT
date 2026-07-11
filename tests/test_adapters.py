@@ -182,3 +182,39 @@ def test_openai_responses_run_agent_offline(sift):
     from sift.adapters.openai import run_agent_responses
 
     assert run_agent_responses(sift, FakeResponsesClient(), "gpt-x", "read my email") == "done"
+
+
+# ------------------------------------------------------- Gemini-shaped client
+
+class FakeGeminiClient:
+    def __init__(self):
+        self.models = SimpleNamespace(generate_content=self._generate)
+
+    def _fc(self, name, args):
+        part = SimpleNamespace(function_call=SimpleNamespace(name=name, args=args))
+        content = SimpleNamespace(parts=[part])
+        return SimpleNamespace(candidates=[SimpleNamespace(content=content)], text="")
+
+    def _generate(self, model, contents, config):
+        last = contents[-1]
+        parts = last["parts"] if isinstance(last, dict) else last.parts
+        first = parts[0]
+        if isinstance(first, dict) and "text" in first:      # opening user turn
+            return self._fc("search_tools", {"q": "read email"})
+        if isinstance(first, dict) and "function_response" in first:
+            resp = first["function_response"]
+            if resp["name"] == "search_tools":
+                text = resp["response"]["result"]
+                path = [ln for ln in text.splitlines() if not ln.startswith("#")][0].split("|")[0]
+                return self._fc("execute_tool", {"path": path, "params": {"m": 1}})
+            done = SimpleNamespace(parts=[])
+            return SimpleNamespace(candidates=[SimpleNamespace(content=done)], text="done")
+        return self._fc("search_tools", {"q": "read email"})
+
+
+def test_gemini_run_agent_offline(sift):
+    from sift.adapters.gemini import gemini_tools, run_agent
+
+    decls = gemini_tools(sift)[0]["function_declarations"]
+    assert {d["name"] for d in decls} == {"search_tools", "execute_tool"}
+    assert run_agent(sift, FakeGeminiClient(), "gemini-x", "read my email") == "done"
