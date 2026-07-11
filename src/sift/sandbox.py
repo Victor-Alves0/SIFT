@@ -227,11 +227,20 @@ class SubprocessSandbox:
                 op = msg.get("op")
                 if op == "done":
                     return msg["result"]
+                # PAUSE the watchdog while the PARENT runs the (trusted) tool: the
+                # timeout budgets the sandboxed snippet, not your own tools — a
+                # long-running tool (deep search etc.) must not be killed mid-way
+                # with its result thrown out. The child is blocked on readline
+                # here, so no untrusted code runs while the clock is stopped.
+                timer.cancel()
                 try:
                     value = handlers[op](msg)
                     proc.stdin.write(json.dumps({"ok": True, "value": value}) + "\n")
                 except Exception as exc:  # tool error -> surface to the sandboxed code
                     proc.stdin.write(json.dumps({"ok": False, "error": str(exc)}) + "\n")
+                finally:
+                    timer = threading.Timer(self.timeout, _watchdog)
+                    timer.start()
                 proc.stdin.flush()
         except OSError:
             pass   # child died mid-write (boot failure) -> the error path below

@@ -19,7 +19,7 @@ Tools:
    • browse — search_tools(path="") lists categories, then path="category", then path="category.service".
 2. execute_tool(path, params)  — run a function by its full path with parameters.
 
-Flow: call search_tools (prefer domain+action), pick the best matching path, then call execute_tool DIRECTLY — the schema is already in the search result. If the matches don't fit, refine domain/action and search again. "risk" actions: proceed only if the user authorised it. Results come pre-filtered; don't invent fields. Answer the user concisely when done."""
+Flow: call search_tools (prefer domain+action), pick the best matching path, then call execute_tool DIRECTLY — the schema is already in the search result. If the matches don't fit, refine domain/action and search again. Write search queries in the language of the tool descriptions (usually English) — translate the user's need if it is phrased in another language. "risk" actions: proceed only if the user authorised it. Results come pre-filtered; don't invent fields. Answer the user concisely when done."""
 
 
 def tool_specs() -> list[dict]:

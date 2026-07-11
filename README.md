@@ -41,9 +41,25 @@ sift.execute_tool("google_workspace.gmail.read", {"m": 1})  # → run + filter
 
 The model never sees the whole catalogue — only 2 tools. It discovers what it
 needs by walking **category → service → function**. The system prompt stays a
-fixed ~200 tokens whether you have 5 tools or 5,000. Adding a tool is one
-decorator. Schemas are returned in **TOON** (one line per tool), and responses
-are **filtered** to a per-tool whitelist.
+fixed ~200 tokens whether your tool schemas total 1k or 100k tokens. Adding a
+tool is one decorator. Schemas are returned in **TOON** (one line per tool), and
+responses are **filtered** to a per-tool whitelist.
+
+> **What actually costs you is schema *size*, not tool *count*.** A single
+> Google Workspace MCP can inject ~50k tokens of schemas — "few tools" is not
+> "cheap". SIFT's surface is constant because the model pulls one TOON line per
+> tool it actually needs, regardless of how heavy the full schemas are.
+
+### What SIFT decides — and what it deliberately doesn't
+
+SIFT is the **HOW** of tool use: how tools are exposed (2 meta-tools), found
+(hybrid retrieval + active request), described (TOON), executed (typed args,
+projection, caps) and governed (scopes, `risk`, `on_risky`). The **WHEN** — 
+whether the model reaches for a tool at all, and which need maps to which tool —
+remains the model's decision, driven by **your system instructions and your tool
+descriptions**. Good descriptions and `examples=` improve discovery; clear
+instructions decide when the model searches. SIFT gives that decision good
+plumbing; it doesn't make it for the model.
 
 ```
 search_tools(...)          → discovery WITH schema inline (query, active         [Search + Inspect]
@@ -72,16 +88,19 @@ sift.search_request(domain="calendar", action="create an event tomorrow at 3pm")
 **SIFT vs the flat catalogue** (what most tool/MCP setups do today — every schema
 injected every turn). Agent-level runs, `deepseek/deepseek-v4-flash` via OpenRouter,
 prompt caching on, 12 tasks, catalogue padded with distractors
-([full method & results](benchmarks/RESULTS.md)):
+([full method & results](benchmarks/RESULTS.md)). The first column is tool
+*count*, but read it as **schema payload** — that's what a flat setup injects and
+what actually scales the cost (~95 tok/tool in this catalogue; a heavy real-world
+MCP reaches the same payload with far fewer tools):
 
-| catalog | condition | success | eff. tokens | SIFT cheaper | wrong calls |
+| catalog (≈schema payload) | condition | success | eff. tokens | SIFT cheaper | wrong calls |
 |--------:|-----------|--------:|------------:|-------------:|------------:|
-|  25 | flat baseline | 100% |  3,497 | —    | 0.25 |
-|  25 | **SIFT**      | 100% |  3,124 | 1.1× | 0.00 |
-| 100 | flat baseline | 100% | 16,068 | —    | 0.08 |
-| 100 | **SIFT**      | 100% |  3,965 | **4.1×** | 0.00 |
-| 250 | flat baseline | 100% | 31,936 | —    | 0.00 |
-| 250 | **SIFT**      | 100% |  3,795 | **8.4×** | 0.00 |
+|  25 (≈2.4k tok) | flat baseline | 100% |  3,497 | —    | 0.25 |
+|  25 (≈2.4k tok) | **SIFT**      | 100% |  3,124 | 1.1× | 0.00 |
+| 100 (≈9.5k tok) | flat baseline | 100% | 16,068 | —    | 0.08 |
+| 100 (≈9.5k tok) | **SIFT**      | 100% |  3,965 | **4.1×** | 0.00 |
+| 250 (≈24k tok) | flat baseline | 100% | 31,936 | —    | 0.00 |
+| 250 (≈24k tok) | **SIFT**      | 100% |  3,795 | **8.4×** | 0.00 |
 
 SIFT's cost stays ~flat as the catalogue grows; the flat baseline scales with it
 (and one flat task at 250 tools blew up to 152k tokens — SIFT used 5.7k on the

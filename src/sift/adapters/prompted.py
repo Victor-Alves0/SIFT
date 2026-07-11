@@ -30,7 +30,9 @@ PROTOCOL — every reply MUST be exactly ONE JSON object and nothing else:
   to answer the user:   {"answer": "<your reply>"}
 
 Always start with search_tools, then execute_tool with a full path from the results,
-then give {"answer": ...}. Tool results are provided back to you as JSON."""
+then give {"answer": ...}. Write search queries in the language of the tool
+descriptions (usually English), translating the user's need if necessary. Tool
+results are provided back to you as JSON."""
 
 
 def _extract_json(text: str) -> dict | None:

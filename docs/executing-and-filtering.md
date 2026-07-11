@@ -81,14 +81,40 @@ Names handled:
 | `run_code` | run a snippet in the sandbox (see [Code mode](code-mode.md)) |
 | `get_tool_schema` | deprecated alias — browse a level (kept for back-compat) |
 
-**Errors are returned, not raised.** Any exception becomes
-`{"error": "..."}` as the tool result, so a bad call is fed back to the model to
-recover from rather than crashing your loop.
+**Errors are returned, not raised — and they point at the fix.** Any exception
+becomes `{"error": "..."}` as the tool result; path problems additionally carry a
+`hint` with the recovery move, because weak models read a bare error, conclude
+"I don't have that tool" and give up:
 
 ```python
 sift.dispatch("execute_tool", {"path": "nope.nope.nope"})
-# → '{"error": "unknown tool \'nope.nope.nope\'"}'
+# → {"error": "unknown tool 'nope.nope.nope'",
+#    "hint": "call search_tools (with q, or domain+action) to discover the correct tool path, ..."}
+
+sift.dispatch("execute_tool", {"tool": "x"})   # wrong argument key
+# → {"error": "execute_tool requires a 'path' argument", "hint": "call search_tools ..."}
 ```
+
+A missing `path` is named as such (never misreported as a permission problem),
+and typed-param failures are structured (`parameter 'a': expected an integer,
+got 'x'`) so the model can retry with a corrected value.
+
+## Risky tools: the `on_risky` confirmation hook
+
+`risk=True` marks a tool; `on_risky` decides what "risky" means at runtime — the
+standard human-in-the-loop confirm, as a hook instead of app plumbing:
+
+```python
+def confirm(path: str, args: dict) -> bool:
+    return ask_the_user(f"Run {path} with {args}?")   # block/prompt however you like
+
+sift = Sift(on_risky=confirm)
+```
+
+Called with the **prepared** (coerced) args right before execution, only for
+`risk=True` tools. Return `False` (or raise) to block — the model receives
+`risky tool '...' was not confirmed (blocked by the on_risky guard)`. Combine
+with `scope(allow_risky=False)` when a model should never even see risky tools.
 
 ## Result caps
 

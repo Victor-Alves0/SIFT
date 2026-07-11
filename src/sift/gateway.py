@@ -35,7 +35,8 @@ class SearchResult:
 
 class Gateway:
     def __init__(self, registry: Registry, embedder: Embedder | None = None, *,
-                 retrieval: str = "hybrid", reranker=None, min_score: float = 0.0) -> None:
+                 retrieval: str = "hybrid", reranker=None, min_score: float = 0.0,
+                 on_risky=None) -> None:
         if retrieval not in ("hybrid", "embedding", "bm25"):
             raise ValueError("retrieval must be 'hybrid', 'embedding' or 'bm25'")
         if retrieval in ("hybrid", "embedding") and embedder is None:
@@ -44,6 +45,9 @@ class Gateway:
         self.embedder = embedder
         self.retrieval = retrieval
         self.reranker = reranker  # object with .rerank(query, docs) -> list[float]
+        # human-in-the-loop guard: called before a risk=True tool runs, with the
+        # prepared args; return False (or raise) to block. None = risk tools run.
+        self.on_risky = on_risky
         # Relevance floor; below it, search returns nothing. Same scale in both
         # search modes (see _passes_floor): max embedding cosine when an embedder
         # exists, else "any BM25 term matched".
@@ -348,6 +352,7 @@ class Gateway:
 
         if tool.fn is None:
             raise RuntimeError(f"tool {path!r} has no executor bound (use @sift.tool or sift.bind)")
+        self._check_risky(path, tool, args)
         raw = tool.fn(**args)
         if _isawaitable(raw):
             raw.close()  # don't leak the un-awaited coroutine
@@ -361,10 +366,17 @@ class Gateway:
         args = self._prepare_args(tool.params, params or {})
         if tool.fn is None:
             raise RuntimeError(f"tool {path!r} has no executor bound (use @sift.tool or sift.bind)")
+        self._check_risky(path, tool, args)
         raw = tool.fn(**args)
         if _isawaitable(raw):
             raw = await raw
         return self._finish(path, tool, raw)
+
+    def _check_risky(self, path: str, tool, args: dict) -> None:
+        if tool.risk and self.on_risky is not None:
+            if not self.on_risky(path, args):
+                raise PermissionError(
+                    f"risky tool {path!r} was not confirmed (blocked by the on_risky guard)")
 
     @staticmethod
     def _finish(path: str, tool, raw):
@@ -388,7 +400,10 @@ class Gateway:
                 if p.default != "":
                     out[name] = _coerce(p.type, p.default)
                 continue
-            out[name] = _coerce(p.type, params[name])
+            try:
+                out[name] = _coerce(p.type, params[name])
+            except ValueError as exc:
+                raise ValueError(f"parameter {name!r}: {exc}") from None
         return out
 
 
@@ -400,38 +415,44 @@ def _coerce(typ: str, value):
     """Coerce a value from the LLM boundary to the declared param type.
 
     Models routinely send everything as strings ("3", "false", "[1,2]"), so each
-    type accepts its string form. Unparseable values pass through unchanged —
-    the tool sees them and can raise its own, more specific error.
+    type accepts its string form. An unparseable value raises a clean ValueError
+    (surfaced to the model as a structured tool error it can retry from) —
+    letting plausible garbage through (``'x' * 4``) propagates hallucination.
     """
     typ = (typ or "").lower()
     if typ in ("integer", "int"):
         try:
             return int(float(value))
         except (TypeError, ValueError):
-            return value
+            raise ValueError(f"expected an integer, got {value!r}") from None
     if typ in ("number", "float"):
         try:
             f = float(value)
         except (TypeError, ValueError):
-            return value
+            raise ValueError(f"expected a number, got {value!r}") from None
         # keep integral numbers as int: tools slice/paginate/index with these,
         # and float(3) would break them (ints still work wherever floats do)
         return int(f) if f.is_integer() else f
     if typ in ("boolean", "bool"):
         if isinstance(value, bool):
             return value
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
         if isinstance(value, str):
             v = value.strip().lower()
             if v in _TRUE_STRINGS:
                 return True
             if v in _FALSE_STRINGS:
                 return False
-        return bool(value)
+        raise ValueError(f"expected a boolean, got {value!r}")
     if typ in ("array", "object", "list", "dict"):
+        want = list if typ in ("array", "list") else dict
         if isinstance(value, str):
             try:
-                return json.loads(value)
+                value = json.loads(value)
             except json.JSONDecodeError:
-                return value
+                raise ValueError(f"expected {typ} (JSON), got unparseable {value!r}") from None
+        if not isinstance(value, want):
+            raise ValueError(f"expected {typ}, got {type(value).__name__}")
         return value
     return value

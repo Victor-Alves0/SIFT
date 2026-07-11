@@ -34,6 +34,10 @@ class Param:
 def parse_param(name: str, compact: str) -> Param:
     """Decode the compact form ``"<type>:<req>:<default>:<desc>"`` into a Param.
 
+    ``req`` is ``n`` or ``r`` (required) / ``o`` or empty (optional) — an unknown
+    flag raises instead of silently meaning "optional" (a typo like ``x`` used to
+    turn a required param optional without a trace).
+
     Convenient for the common case. Note that in this string form the ``default``
     field cannot contain ``:`` (the description, being last, can). For
     colon-bearing defaults use the structured dict form instead::
@@ -42,7 +46,12 @@ def parse_param(name: str, compact: str) -> Param:
     """
     parts = compact.split(":", 3)
     parts += [""] * (4 - len(parts))
-    return Param(name=name, type=parts[0], required=parts[1] == "n", default=parts[2], desc=parts[3])
+    req = parts[1].lower()
+    if req not in ("n", "r", "o", ""):
+        raise ValueError(f"param {name!r}: req flag must be 'n'/'r' (required) or "
+                         f"'o' (optional), got {parts[1]!r}")
+    return Param(name=name, type=parts[0], required=req in ("n", "r"),
+                 default=parts[2], desc=parts[3])
 
 
 def to_param(name: str, spec: Any) -> Param:
@@ -72,6 +81,32 @@ def to_param(name: str, spec: Any) -> Param:
 def param_dict(p: Param) -> dict:
     """Serialisable view of a Param (for adapters / JSON schema)."""
     return {"type": p.type, "required": p.required, "default": p.default, "desc": p.desc}
+
+
+_ANNOTATION_TYPES = {int: "integer", float: "number", bool: "boolean",
+                     str: "string", list: "array", dict: "object"}
+
+
+def derive_params(fn) -> dict[str, Param]:
+    """Derive a param spec from a function's signature (used when ``params=`` is
+    omitted at registration). Without this, ``def add(a, b)`` registered bare
+    would be discoverable but fail on EVERY call — only declared params are
+    bound. Types come from annotations (``a: int`` → integer), requiredness from
+    the absence of a default."""
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):   # builtins / C callables
+        return {}
+    out: dict[str, Param] = {}
+    for name, p in sig.parameters.items():
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+            continue   # *args/**kwargs carry no schema
+        typ = _ANNOTATION_TYPES.get(p.annotation, "string")
+        required = p.default is inspect.Parameter.empty
+        default = "" if required or p.default is None else str(p.default)
+        out[name] = Param(name=name, type=typ, required=required, default=default, desc="")
+    return out
 
 
 def _fn_schema(tool: "ToolDef") -> dict:

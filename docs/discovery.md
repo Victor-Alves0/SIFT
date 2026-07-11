@@ -157,6 +157,25 @@ Sift(embedder=my_embedder)
 Sift(model_name="BAAI/bge-base-en-v1.5")   # pick a different fastembed model
 ```
 
+### Multilingual catalogues and queries
+
+The default embedding model (`bge-small-en-v1.5`) is English-first — "apagar a
+luz do quarto" ranks worse than its English equivalent. Two remedies:
+
+- The built-in system prompt already tells the model to **write search queries in
+  the language of the tool descriptions** (usually English), translating the
+  user's phrasing — free, and enough for most apps.
+- For genuinely multilingual catalogues, pick a multilingual embedder (fastembed
+  ships several):
+
+```python
+Sift(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")  # compact
+Sift(model_name="intfloat/multilingual-e5-large")                               # stronger, heavier
+```
+
+(Also available: `paraphrase-multilingual-mpnet-base-v2`, `jinaai/jina-embeddings-v3`.
+E5-family models get the correct query prefix automatically via `embed_query`.)
+
 ## Reranking (optional)
 
 A cross-encoder reranker re-scores the fused shortlist with a query×document model

@@ -40,9 +40,28 @@ from .metatools import META_TOOL_NAMES, SYSTEM_PROMPT, tool_specs
 from .registry import Registry, ToolDef
 
 __all__ = ["Sift", "Registry", "ToolDef", "SearchResult", "SYSTEM_PROMPT", "tool_specs"]
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 _log = logging.getLogger("sift")
+
+# Recovery hint attached to path errors: weak models read a bare error, conclude
+# "I don't have that tool" and give up — pointing at the fix keeps them moving.
+PATH_HINT = ('call search_tools (with q, or domain+action) to discover the correct '
+             'tool path, then execute_tool with {"path": ..., "params": {...}}')
+
+
+def _error_json(message: str, hint: str | None = None) -> str:
+    body: dict = {"error": message}
+    if hint:
+        body["hint"] = hint
+    return json.dumps(body, ensure_ascii=False)
+
+
+def _exc_message(exc: Exception) -> str:
+    # str(KeyError("x")) is '"x"' — unwrap so errors aren't double-quoted noise
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
 
 
 class Sift:
@@ -67,7 +86,8 @@ class Sift:
                  model_name: str | None = None, retrieval: str = "hybrid",
                  reranker=None, min_score: float = 0.0, sandbox=None,
                  index_cache: str | None = None, max_result_chars: int | None = 100_000,
-                 observer: Callable[[str, dict], None] | None = None) -> None:
+                 observer: Callable[[str, dict], None] | None = None,
+                 on_risky: Callable[[str, dict], bool] | None = None) -> None:
         self.registry = registry or Registry()
         self._embedder = embedder
         self._model_name = model_name
@@ -78,7 +98,11 @@ class Sift:
         self._index_cache = index_cache
         self._max_result_chars = max_result_chars
         self._observer = observer
+        # human-in-the-loop guard for risk=True tools: on_risky(path, args) -> bool;
+        # False (or raising) blocks the execution. Confirm-before-send, made a hook.
+        self._on_risky = on_risky
         self._pinned: list[str] = []   # hot tools kept always-visible (no search)
+        self.meta: dict = {}           # free-form integrator metadata (yours to use)
         self._gateway: Gateway | None = None
 
     # ---------------------------------------------------------- observability
@@ -108,9 +132,15 @@ class Sift:
 
         ``examples`` are optional "how a user asks for this" phrasings — they are
         indexed for retrieval and improve discovery on ambiguous verbs.
+
+        When ``params`` is omitted, the spec is DERIVED from the function's
+        signature (annotations → types, defaults → optional) — so a bare
+        ``def add(a: int, b: int)`` is callable, not a silent trap.
         """
         def deco(fn: Callable[..., dict]) -> Callable[..., dict]:
-            self.registry.add(ToolDef(path, description, params or {}, returns or [],
+            from .registry import derive_params
+            spec = params if params is not None else derive_params(fn)
+            self.registry.add(ToolDef(path, description, spec, returns or [],
                                       risk, fn, transform, examples or []), replace=replace)
             return fn
         return deco
@@ -119,7 +149,9 @@ class Sift:
                  params: dict | None = None, returns: list[str] | None = None,
                  risk: bool = False, transform: Callable | None = None,
                  examples: list[str] | None = None, replace: bool = False) -> "Sift":
-        self.registry.add(ToolDef(path, description, params or {}, returns or [],
+        from .registry import derive_params
+        spec = params if params is not None else derive_params(fn)
+        self.registry.add(ToolDef(path, description, spec, returns or [],
                                   risk, fn, transform, examples or []), replace=replace)
         return self
 
@@ -157,12 +189,14 @@ class Sift:
         return self
 
     def scope(self, *, allow: list[str] | None = None, deny: list[str] | None = None,
-              allow_risky: bool = True):
+              allow_risky: bool = True, pin: list[str] | None = None):
         """A scoped view that only sees/runs tools matching the allow/deny globs
         (an `allowedTools` per model/session). Reuses the built index.
-        ``allow_risky=False`` additionally blocks every tool flagged ``risk``."""
+        ``allow_risky=False`` additionally blocks every tool flagged ``risk``;
+        ``pin`` keeps hot tools always-visible FOR THIS SCOPE ONLY (per-model
+        pinning — no shared mutable state on the parent)."""
         from .scope import SiftScope
-        return SiftScope(self, allow=allow, deny=deny, allow_risky=allow_risky)
+        return SiftScope(self, allow=allow, deny=deny, allow_risky=allow_risky, pin=pin)
 
     # ----------------------------------------------------------------- index
     def build_index(self) -> "Sift":
@@ -170,7 +204,8 @@ class Sift:
             from .embeddings import FastEmbedder
             self._embedder = FastEmbedder(self._model_name)
         self._gateway = Gateway(self.registry, self._embedder, retrieval=self._retrieval,
-                                reranker=self._reranker, min_score=self._min_score)
+                                reranker=self._reranker, min_score=self._min_score,
+                                on_risky=self._on_risky)
         self._gateway.build_index(cache=self._index_cache)
         return self
 
@@ -206,8 +241,11 @@ class Sift:
         args = json.loads(arguments) if isinstance(arguments, str) else dict(arguments or {})
         try:
             if name == "execute_tool":
-                res = await self.aexecute_tool(args["path"], args.get("params") or {})
-                self._emit("execute", {"path": args.get("path"), "ok": True, "ms": None})
+                path = (args.get("path") or "").strip()
+                if not path:
+                    return _error_json("execute_tool requires a 'path' argument", PATH_HINT)
+                res = await self.aexecute_tool(path, args.get("params") or {})
+                self._emit("execute", {"path": path, "ok": True, "ms": None})
                 return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             if "__" in name:  # pinned/promoted tool called directly by its flat name
                 path = name.replace("__", ".")
@@ -217,8 +255,9 @@ class Sift:
             if name == "run_code":
                 return self._cap(await asyncio.to_thread(self.run_code, args["code"]))
         except Exception as exc:
-            self._emit("execute", {"path": args.get("path"), "ok": False, "error": str(exc), "ms": None})
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            msg = _exc_message(exc)
+            self._emit("execute", {"path": args.get("path"), "ok": False, "error": msg, "ms": None})
+            return _error_json(msg, PATH_HINT if isinstance(exc, KeyError) else None)
         return self.dispatch(name, args)  # search/browse are cheap and sync-safe
 
     def session(self, *, max_promoted: int = 10):
@@ -261,8 +300,11 @@ class Sift:
             if name == "get_tool_schema":  # deprecated alias — folded into search_tools
                 return self.gateway.browse(args.get("path", "") or "", int(args.get("top_k", 3)))
             if name == "execute_tool":
-                res = self.execute_tool(args["path"], args.get("params") or {})
-                self._emit("execute", {"path": args.get("path"), "ok": True,
+                path = (args.get("path") or "").strip()
+                if not path:   # missing/wrong argument key — say so, don't mislead
+                    return _error_json("execute_tool requires a 'path' argument", PATH_HINT)
+                res = self.execute_tool(path, args.get("params") or {})
+                self._emit("execute", {"path": path, "ok": True,
                                        "ms": round((time.perf_counter() - t0) * 1000, 1)})
                 return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             if "__" in name:  # a pinned/promoted tool called directly by its flat name
@@ -273,10 +315,13 @@ class Sift:
                 return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             return json.dumps({"error": f"unknown meta-tool {name!r}"})
         except Exception as exc:  # surfaced back to the model as a tool result
+            msg = _exc_message(exc)
             self._emit("execute" if name == "execute_tool" else name,
-                       {"path": args.get("path"), "ok": False, "error": str(exc),
+                       {"path": args.get("path"), "ok": False, "error": msg,
                         "ms": round((time.perf_counter() - t0) * 1000, 1)})
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            # an unknown path gets the recovery hint — models retry instead of quitting
+            hint = PATH_HINT if isinstance(exc, KeyError) else None
+            return _error_json(msg, hint)
 
     # --------------------------------------------------------------- adapters
     def openai_tools(self) -> list[dict]:
@@ -290,10 +335,15 @@ class Sift:
 
     @property
     def system_prompt(self) -> str:
-        if not self._pinned:
+        return self._prompt_for(self._pinned)
+
+    def _prompt_for(self, pins: list[str]) -> str:
+        """The system prompt with a direct-call hint for ``pins`` (shared with
+        scoped views, which combine the parent's pins with their own)."""
+        if not pins:
             return SYSTEM_PROMPT
         from .session import promoted_name
-        names = ", ".join(promoted_name(p) for p in self._pinned)
+        names = ", ".join(promoted_name(p) for p in dict.fromkeys(pins))
         return (SYSTEM_PROMPT + "\n\nSome tools are already available to call DIRECTLY "
                 f"(no search needed): {names}.")
 

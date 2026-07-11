@@ -62,10 +62,48 @@ def test_array_and_object_from_json_strings():
     assert _run({"a": "array:n::items"}, {"a": [1]}) == {"a": [1]}
 
 
-def test_unparseable_value_passes_through():
-    # the tool gets the raw value and can raise its own, more specific error
-    assert _run({"n": "number:n::count"}, {"n": "many"}) == {"n": "many"}
-    assert _run({"a": "array:n::items"}, {"a": "not json"}) == {"a": "not json"}
+def test_unparseable_value_raises_clean_error():
+    """Plausible garbage must NOT reach the tool ('x' * 4 == 'xxxx' propagates
+    hallucination) — the model gets a structured, named error to retry from."""
+    with pytest.raises(ValueError, match="'n'.*integer"):
+        _run({"n": "integer:n::count"}, {"n": "x"})
+    with pytest.raises(ValueError, match="'n'.*number"):
+        _run({"n": "number:n::count"}, {"n": "many"})
+    with pytest.raises(ValueError, match="'a'.*array"):
+        _run({"a": "array:n::items"}, {"a": "not json"})
+    with pytest.raises(ValueError, match="'f'.*boolean"):
+        _run({"f": "boolean:n::flag"}, {"f": "maybe"})
+
+
+def test_required_flag_r_is_accepted_and_typos_raise():
+    """'r' reads as required (users assume it); an unknown flag raises instead of
+    silently meaning optional."""
+    from sift.registry import parse_param
+
+    assert parse_param("a", "integer:r::val").required is True
+    assert parse_param("a", "integer:n::val").required is True
+    assert parse_param("a", "integer:o::val").required is False
+    with pytest.raises(ValueError, match="req flag"):
+        parse_param("a", "integer:x::val")
+
+
+def test_bare_decorator_derives_params_from_signature():
+    """A tool registered without params= must be CALLABLE, not a silent trap."""
+    import json
+
+    s = Sift(retrieval="bm25")
+
+    @s.tool("demo.math.add", description="add two numbers")
+    def add(a: int, b: int, precise: bool = False):
+        return {"sum": a + b, "precise": precise}
+
+    s.build_index()
+    out = json.loads(s.dispatch("execute_tool",
+                                {"path": "demo.math.add", "params": {"a": "1", "b": 2}}))
+    assert out == {"sum": 3, "precise": False}      # bound AND coerced ("1" -> 1)
+
+    schema = s.get_tool_schema("demo.math.add")
+    assert "a:integer:n" in schema and "precise:boolean:o" in schema
 
 
 def test_explicit_empty_string_overrides_default():

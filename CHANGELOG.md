@@ -3,6 +3,55 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
+## [0.6.0] — 2026-07-11
+
+DX/robustness release driven by field feedback from an integrator building a
+production app on 0.5.0 — every reported bug was reproduced before fixing.
+
+### Fixed
+- **Bare registration is callable, not a trap.** A tool registered without
+  ``params=`` used to be discoverable but fail on *every* call (only declared
+  params are bound). The spec is now **derived from the function signature**
+  (annotations → types, defaults → optional): ``def add(a: int, b: int)``
+  just works. Explicit ``params=`` still wins.
+- **Typed params fail loudly, not plausibly.** An unparseable value for a
+  declared type used to pass through raw (``'x' * 4 == 'xxxx'`` — garbage that
+  propagates hallucination); it now raises a clean, named error the model can
+  retry from (``parameter 'a': expected an integer, got 'x'``).
+- **Req-flag typos no longer silently mean "optional"**: ``r`` is accepted as
+  required (users assume it); any other unknown flag raises at registration.
+- **Errors point at the fix, not the wrong direction.** A missing ``path``
+  argument is named as such (was: ``tool None is not allowed in this scope`` — a
+  misclassified permission error), and path errors carry a ``hint`` telling the
+  model to ``search_tools`` for the correct path — weak models read a bare
+  "not allowed" and give up. ``KeyError`` messages are no longer double-quoted.
+- **Code-mode watchdog no longer kills long-running tools.** The subprocess
+  timeout now budgets the *sandboxed snippet* only — the clock pauses while the
+  parent runs a proxied (trusted) tool, so a deep-search tool slower than the
+  timeout completes instead of having its result discarded.
+
+### Added
+- **Per-scope pins**: ``sift.scope(allow=..., pin=[...])`` — per-model hot tools
+  with no shared mutable state on the parent (kills the ``_pinned[:] = ...`` /
+  ``clear()`` dance). A pin denied by the scope's own rules raises.
+- **Async on scopes**: ``SiftScope.adispatch`` / ``aexecute_tool`` with the same
+  allow/deny enforcement — no more ``run_in_threadpool`` around every call.
+- **``on_risky`` hook** (``Sift(on_risky=fn)``): human-in-the-loop confirmation
+  for ``risk=True`` tools, called with the prepared args right before execution;
+  ``False``/raise blocks. The confirm-before-send pattern, standardized.
+- **``meta`` dict** on ``Sift`` and ``SiftScope`` — a sanctioned home for
+  integrator metadata (no more private-attribute hacks).
+- **Language guidance in the system prompt**: models are told to write search
+  queries in the language of the tool descriptions (translating the user's
+  phrasing), and the docs cover multilingual embedding models
+  (``paraphrase-multilingual-*``, ``multilingual-e5-large``, ``jina-v3``).
+
+### Docs
+- README reframed: SIFT is the **HOW** of tool use (exposure, discovery,
+  execution, governance); the **WHEN** stays with the model, driven by your
+  instructions and tool descriptions. Benchmarks now read as **schema payload**,
+  not tool count — what actually scales cost (a single heavy MCP ≈ 50k tokens).
+
 ## [0.5.0] — 2026-07-04
 
 Two safe, opt-in latency optimizations for the "cheap even with few tools"

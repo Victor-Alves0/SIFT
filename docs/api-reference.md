@@ -8,7 +8,7 @@ A condensed reference for the public surface. Source of truth is the docstrings 
 ```python
 Sift(*, registry=None, embedder=None, model_name=None, retrieval="hybrid",
      reranker=None, min_score=0.0, sandbox=None, index_cache=None,
-     max_result_chars=100_000, observer=None)
+     max_result_chars=100_000, observer=None, on_risky=None)
 ```
 
 | Param | Default | Meaning |
@@ -23,6 +23,7 @@ Sift(*, registry=None, embedder=None, model_name=None, retrieval="hybrid",
 | `index_cache` | `None` | file path persisting vectors across restarts (auto-invalidated) |
 | `max_result_chars` | `100_000` | cap on results sent to the model (`None` disables) |
 | `observer` | `None` | `callable(event, data)` — search/execute/run_code telemetry |
+| `on_risky` | `None` | `callable(path, args) -> bool` — confirm hook before any `risk=True` execution |
 
 ### Registration
 
@@ -32,7 +33,7 @@ Sift(*, registry=None, embedder=None, model_name=None, retrieval="hybrid",
 | `add_tool(path, fn, *, description, params=None, returns=None, risk=False, transform=None)` | `Sift` | register an existing function (chainable) |
 | `describe(node_path, description)` | `Sift` | set a category/service description |
 | `set_response(path, *, returns=None, transform=None)` | `Sift` | (re)configure projection on any tool |
-| `scope(*, allow=None, deny=None, allow_risky=True)` | `SiftScope` | a scoped view |
+| `scope(*, allow=None, deny=None, allow_risky=True, pin=None)` | `SiftScope` | a scoped view (with per-scope pins) |
 | `pin(*paths)` | `Sift` | keep hot tools always-visible as first-class specs (no search round-trip) |
 | `build_index()` | `Sift` | **build the search index (call once, after registering)** |
 
@@ -119,9 +120,11 @@ class SearchResult:
 
 Returned by `Sift.scope(...)`. Mirrors the facade — `search_tools`,
 `search_request`, `search_compact`, `search_request_compact`, `execute_tool`,
-`run_code`, `dispatch`, `openai_tools`, `anthropic_tools`, `langchain_tools`,
-`system_prompt`, `code_system_prompt` — with `allow`/`deny`/`allow_risky` enforced
-on both discovery and execution. `allowed(path) -> bool` tests a single path. See
+`aexecute_tool`, `run_code`, `dispatch`, `adispatch`, `openai_tools`,
+`anthropic_tools`, `langchain_tools`, `system_prompt`, `code_system_prompt` —
+with `allow`/`deny`/`allow_risky` enforced on both discovery and execution.
+Per-scope `pin=` adds always-visible tools for this view only; `meta` is a public
+dict for integrator metadata; `allowed(path) -> bool` tests a single path. See
 [Scoping](scoping.md).
 
 ## `Registry`
@@ -133,6 +136,7 @@ Holds tools by dotted path. Highlights:
 | `Registry.from_json(path)` | load the nested `category → services → fns` JSON |
 | `add(ToolDef, *, replace=False)` | register (two-dot path; duplicate raises unless `replace=True`) |
 | `input_schema_for(tool)` | JSON Schema for a tool's params (module function) |
+| `derive_params(fn)` | param spec from a function signature (module function; used when `params=` is omitted) |
 | `bind(path, fn)` | attach an executor to an already-registered tool |
 | `set_response(path, *, returns=None, transform=None)` | configure projection |
 | `describe(node_path, description)` | category/service description |

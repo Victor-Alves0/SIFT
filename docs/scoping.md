@@ -12,8 +12,19 @@ view = sift.scope(
     allow=["google_workspace.gmail.*", "web.search.*"],  # globs over the dotted path
     deny=["*.delete", "*.send"],                          # deny always wins
     allow_risky=True,                                     # or False to block all risk=True
+    pin=["google_workspace.gmail.read"],                  # hot tools for THIS scope only
 )
 ```
+
+Per-scope `pin=` keeps hot tools always-visible **for this model/session only** —
+no shared mutable state on the parent `Sift`. A pin the scope itself denies is a
+config error and raises. The scope's `system_prompt` lists its direct-call tools
+(parent pins it can see + its own).
+
+Scopes also carry the async surface (`await view.adispatch(...)` /
+`await view.aexecute_tool(...)`) with the same enforcement, and a public
+`view.meta` dict for your integration's own metadata (mode flags, cached specs —
+no more private-attribute hacks).
 
 ## How matching works
 

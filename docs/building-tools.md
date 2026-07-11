@@ -54,6 +54,19 @@ Arguments:
 The wrapped function must **return a `dict`** (a `TypeError` is raised otherwise).
 `async def` tools are supported — execute them via `aexecute_tool`/`adispatch`.
 
+**`params=` omitted? The spec is derived from the signature.** Annotations become
+types (`a: int` → `integer`), a missing default means required:
+
+```python
+@sift.tool("demo.math.add", description="add two numbers")
+def add(a: int, b: int, precise: bool = False):   # → a:integer:n, b:integer:n,
+    return {"sum": a + b}                          #   precise:boolean:o:False
+```
+
+Prefer explicit `params=` for real catalogues (derived specs have no
+descriptions, which retrieval and the model both benefit from) — but a bare
+registration is callable, not a trap.
+
 ## Parameters
 
 ### Compact string form
@@ -62,7 +75,8 @@ The wrapped function must **return a `dict`** (a `TypeError` is raised otherwise
 
 - **type** — `string`, `number`, `integer`, `boolean`, `array`, `object` (see the
   coercion table below).
-- **req** — `n` = required, `o` = optional.
+- **req** — `n` or `r` = required, `o` (or empty) = optional. Any other flag
+  raises at registration — a typo must not silently turn a required param optional.
 - **default** — used when the param is omitted (optional params only).
 - **description** — free text; may contain colons (it's the last field).
 
@@ -106,8 +120,10 @@ so SIFT coerces values to the declared type before your function sees them:
 | `boolean` (`bool`) | `"true"/"1"/"yes"/"on"` → `True`; `"false"/"0"/"no"/"off"/""` → `False` |
 | `array` / `object` | JSON strings are parsed (`"[1,2]"` → `[1, 2]`); native values pass through |
 
-Unparseable values pass through unchanged — your tool sees the raw value and can
-raise its own, more specific error.
+An **unparseable value raises a clean, named error** (`parameter 'a': expected an
+integer, got 'x'`) surfaced to the model as a structured tool error it can retry
+from. Letting plausible garbage through (`'x' * 4 == 'xxxx'`) propagates
+hallucination — SIFT fails loudly at the boundary instead.
 
 **Missing vs empty.** Only an *absent* or `None` argument counts as missing (a
 required one raises `ValueError`; an optional one gets its default). An explicit

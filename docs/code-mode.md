@@ -77,7 +77,10 @@ Runs the snippet in a **separate process** (`python -m sift._sandbox_child`):
 - The child gets a **scrubbed environment** (a minimal allowlist: PATH etc.) —
   parent API keys and other secrets never reach the process running untrusted code.
 - A **wall-clock watchdog** kills the child on `timeout` — catching C-level hangs
-  a Python line budget can't observe (e.g. `sum(range(10**9))`).
+  a Python line budget can't observe (e.g. `sum(range(10**9))`). The clock
+  **pauses while the parent runs a proxied tool**: the timeout budgets the
+  untrusted snippet, not your own tools — a deep-search tool slower than the
+  timeout completes normally instead of being killed with its result discarded.
 - On Unix, **CPU and memory rlimits** (`cpu_seconds`, `memory_mb`) are applied.
 - The same AST/line-budget policy still runs inside the child. If the child dies
   unexpectedly, the tail of its stderr is surfaced in the error for diagnosis.
