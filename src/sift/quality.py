@@ -10,11 +10,15 @@ Three complementary instruments:
 - :class:`GapTracker` — an observer that turns production telemetry into
   decisions: which user needs found NO tool (catalogue gaps) and which tools are
   hot enough to :meth:`~sift.Sift.pin` (``suggest_pins``).
+- :func:`suggest_min_score` — calibrate the relevance floor, so discovery can say
+  "nothing fits, answer directly" instead of always returning its best guess.
 
     report = quality.lint(sift)
     print(report.format())
 
     failures = quality.selftest(sift)
+
+    print(quality.suggest_min_score(sift, negatives=["what's the weather on Mars"]).format())
 
     tracker = quality.GapTracker()
     sift = Sift(observer=tracker); ...
@@ -107,6 +111,79 @@ def lint(sift, *, dup_threshold: float = 0.92, max_desc_len: int = 200,
                             f"near-duplicate of {pb} (cosine {sims[a, b]:.2f}) — "
                             "retrieval may pick either; differentiate the descriptions"))
     return LintReport(issues)
+
+
+@dataclass
+class FloorSuggestion:
+    """A calibrated value for ``Sift(min_score=...)`` — the relevance floor below
+    which discovery answers "no tool fits" instead of handing back its best guess."""
+    suggested: float
+    weakest_positive: float          # the lowest score a query your catalog CAN serve got
+    weakest_query: str               # ...and which one — raise the floor past this and it breaks
+    strongest_negative: float | None = None   # the best score an out-of-catalog query got
+    strongest_negative_query: str | None = None
+    separated: bool = True           # False = a negative outscored a positive: no floor works
+
+    def format(self) -> str:
+        lines = [f"suggested min_score = {self.suggested:.3f}",
+                 f"  weakest in-catalog query scored {self.weakest_positive:.3f} "
+                 f"({self.weakest_query!r})"]
+        if self.strongest_negative is not None:
+            lines.append(f"  strongest out-of-catalog query scored {self.strongest_negative:.3f} "
+                         f"({self.strongest_negative_query!r})")
+            if not self.separated:
+                lines.append("  ⚠ NOT SEPARABLE: an out-of-catalog query outscored a real one. "
+                             "No floor can tell them apart — fix the descriptions first "
+                             "(run lint/selftest); the suggestion below only protects recall.")
+        else:
+            lines.append("  no negatives given: this is a CEILING, not a calibration — the "
+                         "highest floor that still admits every tool. Pass negatives= "
+                         "(things your catalog cannot do) for a real recommendation.")
+        return "\n".join(lines)
+
+
+def suggest_min_score(sift, *, negatives: list[str] | None = None,
+                      margin: float = 0.9) -> FloorSuggestion:
+    """Calibrate the relevance floor from the catalogue instead of guessing it.
+
+    ``min_score`` defaults to 0.0, which means discovery ALWAYS returns its top-k —
+    however bad the match. That is discovery's own hollow success: it teaches the
+    model that a tool always exists, so it forces one. A floor is what lets SIFT
+    answer "nothing here fits, answer directly" — but only if the number is right,
+    and nobody can guess it for someone else's catalogue.
+
+    Scores are on exactly the scale the floor uses (max embedding cosine over the
+    index — see ``Gateway._passes_floor``). Positives are every tool's own
+    description and examples. ``negatives`` are needs your catalogue genuinely
+    cannot serve ("what's the weather on Mars") — supply them and you get a real
+    midpoint; omit them and you get the ceiling that preserves recall.
+    """
+    gw = sift.gateway
+    if gw.retrieval == "bm25" or not gw._vectors:
+        raise ValueError("min_score calibration needs embeddings "
+                         "(retrieval='hybrid' or 'embedding') and a built index")
+    from .embeddings import cosine
+
+    def score(q: str) -> float:
+        qv = gw._embed_query(q)
+        return max(cosine(qv, v) for v in gw._vectors)
+
+    positives = [(score(q), q) for t in sift.registry.tools()
+                 for q in ([t.description] + list(t.examples)) if q.strip()]
+    if not positives:
+        raise ValueError("no tool descriptions to calibrate against")
+    weakest, weakest_q = min(positives)
+
+    if not negatives:
+        # No negatives: the most we can honestly say is "go above this and you start
+        # rejecting queries your catalogue CAN serve".
+        return FloorSuggestion(round(weakest * margin, 3), round(weakest, 3), weakest_q)
+
+    strongest, strongest_q = max((score(q), q) for q in negatives if q.strip())
+    separated = strongest < weakest
+    suggested = (weakest + strongest) / 2 if separated else weakest * margin
+    return FloorSuggestion(round(suggested, 3), round(weakest, 3), weakest_q,
+                           round(strongest, 3), strongest_q, separated)
 
 
 @dataclass

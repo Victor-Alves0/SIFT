@@ -40,7 +40,7 @@ from .metatools import META_TOOL_NAMES, SYSTEM_PROMPT, tool_specs
 from .registry import Registry, ToolDef
 
 __all__ = ["Sift", "Registry", "ToolDef", "SearchResult", "SYSTEM_PROMPT", "tool_specs"]
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 _log = logging.getLogger("sift")
 

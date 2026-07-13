@@ -288,9 +288,17 @@ class Gateway:
         results = self.search_tools(query, top_k=top_k * 4, predicate=predicate)
         return self._render_compact(results, top_k)
 
+    # Discovery's own hollow success: handing back the top-k however bad the match
+    # teaches the model that a tool always exists. Saying "nothing fits" is only
+    # useful if it also says what to do instead — otherwise the model just retries
+    # with a synonym and burns another full context.
+    NO_MATCH = ("# no matching tools — none of the available tools fit this request.\n"
+                "# Answer from your own knowledge, or tell the user this cannot be done here.\n"
+                "# Do NOT search again with a reworded query: the catalog has been searched.")
+
     def _render_compact(self, results: list[SearchResult], top_k: int) -> str:
         if not results:
-            return "# no matching tools — none of the available tools fit this request."
+            return self.NO_MATCH
         seen: set[str] = set()
         lines: list[str] = []
         for r in results:

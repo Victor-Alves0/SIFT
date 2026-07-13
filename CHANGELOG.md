@@ -3,6 +3,63 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
+## [0.8.0] — 2026-07-13
+
+Nothing in SIFT may succeed hollowly. In tool calling every wasted round-trip
+re-sends the entire context, so a result the model cannot learn from — an empty
+`{"stdout": ""}`, a top-k of irrelevant tools — does not cost a call, it costs a
+turn. Both were fixed, and code mode was reviewed against the current frontier.
+
+### Added
+- **`execute_tool` is now part of the code-mode surface.** Code mode used to expose
+  only `search_tools` + `run_code`, forcing the model to write Python even for a
+  single call — paying sandbox overhead and a real parse-failure rate to do what one
+  JSON call does. Code mode's win is COMPOSITE work (many calls, control flow,
+  filtering a large result); for one call, direct execution is cheaper and cannot
+  fail to compile.
+- **`CODE_SYSTEM_PROMPT` now tells the model to keep `output` small** — filter,
+  slice and aggregate *inside* the snippet. Intermediate values stay in the sandbox
+  for free, while everything in `output` is re-sent with the conversation on every
+  later turn. This is the pattern behind code execution's headline savings, and it
+  was the one SIFT never asked for.
+- **REPL semantics in `run_code`**: a bare expression on the last line is promoted
+  to `output`, like a notebook. Models routinely end a snippet with the value they
+  mean to return instead of assigning it; that intent is honoured rather than
+  charged a round-trip. An explicit `output = …` still wins, and a trailing
+  `print(...)` is untouched.
+- **`sift.sandbox.SANDBOX_RULES`** — the sandbox's limits as prompt text,
+  **generated from the policy constants themselves**, and now part of
+  `CODE_SYSTEM_PROMPT`. The rules cannot drift from what is enforced.
+- **`sift.quality.suggest_min_score()`** — calibrate the relevance floor from the
+  catalogue instead of guessing it. Scores every tool's own description/examples
+  (positives) against needs the catalogue cannot serve (`negatives=`) and proposes
+  the value between them; says so honestly when the two do not separate (a catalogue
+  problem no floor can fix) and when no negatives were given (a recall ceiling, not
+  a calibration).
+
+### Fixed
+- **Hollow success in `run_code`**: a snippet that assigned nothing and printed
+  nothing returned `{"stdout": ""}` — an empty *success* the model could not learn
+  from, so it guessed, retried, or fell back to `search_tools` (thousands of tokens,
+  measured in the field). It now returns an actionable `error` + `hint`.
+  Crucially, "empty" is still distinguished from "failed": a snippet that *did* set
+  `output` to an empty value returns `{"output": null}`, and a no-result error
+  carries a `ran` field naming how many tool calls already executed — so a retry
+  never silently re-sends an email.
+- **Sandbox policy was enforced but never communicated**: `CODE_SYSTEM_PROMPT`
+  told the model to assign `output` but never mentioned that imports are rejected,
+  so the model discovered the rule by burning a turn on `SandboxError`. Policy
+  violations now return the rules as a `hint`, and the prompt states them up front.
+- **Discovery's no-match message was effectively dead code.** It only fired when
+  `min_score > 0`, and `min_score` defaults to 0.0 — so search always handed back
+  its top-k however irrelevant, teaching the model that a tool always exists. The
+  floor is now calibratable (`suggest_min_score`), and the message tells the model
+  what to do instead: answer directly, and do **not** re-search with a synonym
+  (which would burn another full context for the same answer).
+- Docs: the subprocess backend has been launched as a script (not `-m
+  sift._sandbox_child`) since 0.4.1; `docs/code-mode.md` still described the old
+  form.
+
 ## [0.7.0] — 2026-07-11
 
 Evidence + quality release: SIFT evaluated on the public MCP-Zero dataset, an

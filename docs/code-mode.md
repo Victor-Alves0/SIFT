@@ -1,14 +1,31 @@
 # Code mode & the sandbox
 
-For composite tasks, one tool call per turn is wasteful. **Code mode** lets the
+For **composite** tasks, one tool call per turn is wasteful. **Code mode** lets the
 model write a short Python snippet that orchestrates many tools in a **single
-turn** (the StackOne/Cloudflare "code mode" pattern), collapsing multi-turn
+turn** (the CodeAct / Cloudflare "code mode" pattern), collapsing multi-turn
 overhead.
+
+## When code mode is NOT the answer
+
+Code mode is not free: it needs a sandbox, it is harder to debug than a clean list
+of tool calls, and the model can emit Python that doesn't compile. For a **single
+tool call**, writing code is pure overhead — a plain call cannot fail to parse.
+
+That is why `code_tools()` exposes **three** tools, not two:
+
+| Situation | Use | Why |
+|---|---|---|
+| One call answers it ("what time is it?") | `execute_tool` | nothing to compile, nothing to sandbox |
+| 2+ calls, a loop, a conditional | `run_code` | collapses N turns into 1 |
+| A big result you only need a slice of | `run_code` | filter in the sandbox, not in the context |
+
+A code-mode surface without `execute_tool` forces Python for every request — which
+is how a "what's today's date?" turn ends up costing thousands of tokens.
 
 ## Using code mode
 
 ```python
-tools  = sift.code_tools()          # the code-mode surface: search_tools + run_code
+tools  = sift.code_tools()          # search_tools + execute_tool + run_code
 system = sift.code_system_prompt    # instructions for writing snippets
 ```
 
@@ -36,6 +53,57 @@ runaway loop can't hammer your tools.
 
 `call`/`search` route through the same object you invoke `run_code` on, so on a
 [scope](scoping.md) they obey that scope's allow/deny — even inside a snippet.
+
+## Keep `output` small — this is where the savings actually come from
+
+The headline number people quote for code execution (Anthropic reports 150k → 2k
+tokens on a large-catalogue task, ~98.7%) comes from **two** things. SIFT gives you
+the first for free — the model never loads the full catalogue, it searches. The
+second is on your prompt and the model:
+
+> Intermediate values stay in the sandbox for free. Everything you put in `output`
+> is re-sent with the entire conversation on **every later turn**.
+
+So a snippet that does `output = call('gmail.search', q='...')` and dumps 17 KB of
+raw email bodies into the context has thrown the win away. Filter first:
+
+```python
+msgs = call('mail.gmail.search', q='from:boss', m=100)   # 100 messages, in the sandbox
+output = [{'id': m['id'], 'subject': m['subject']} for m in msgs][:5]   # 5 rows, in the context
+```
+
+`CODE_SYSTEM_PROMPT` states this rule. Enforce it at your boundary too: `returns=`
+on each tool (response filtering), `max_result_chars`, and the `on_result` hook.
+
+## Never fail silently
+
+In tool calling, **every wasted round-trip re-sends the whole context** — a
+snippet that comes back empty is not a small cost, it is a full turn. So code mode
+is built so the model can always recover *from the result itself*:
+
+- **A bare last expression is promoted to `output`**, exactly like a REPL. Models
+  routinely end a snippet with the value they mean to return
+  (`[m["id"] for m in msgs]`) instead of assigning it. That is not ambiguity — so
+  it is honoured, not punished. An explicit `output = …` always wins, and a
+  trailing `print(...)` is left alone (stdout already carries it).
+- **A policy violation states the policy.** `import datetime` returns the error
+  *and* the sandbox rules (`hint`), so the model fixes it on the next try instead
+  of guessing. Those rules are generated **from** the enforcement code
+  (`sift.sandbox.SANDBOX_RULES`), so they cannot drift out of date.
+- **A snippet that produces nothing says so.** If nothing is assigned and nothing
+  is printed, `run_code` returns an `error` — not a hollow `{"stdout": ""}` that
+  reads as success and teaches the model nothing.
+- **…but "empty" is not "failed".** If the snippet *did* set `output` and the value
+  is simply empty, you get `{"output": null}`. And when a no-result snippet had
+  already executed tools, the error carries a `ran` field naming how many —
+  because a retry must never silently re-send an email.
+
+```jsonc
+{"error": "no result: nothing was assigned to `output` and nothing was printed",
+ "hint":  "assign what you want back, e.g. output = call('some.tool.path', arg=1) …",
+ "ran":   "1 tool call(s) already executed — they were NOT undone; do not repeat
+           any that have side effects"}
+```
 
 ## The pluggable sandbox
 
@@ -69,7 +137,8 @@ It raises the bar but shares your process, so treat it as a guardrail, not a jai
 
 ### SubprocessSandbox (isolated)
 
-Runs the snippet in a **separate process** (`python -m sift._sandbox_child`):
+Runs the snippet in a **separate process** (`_sandbox_child.py`, launched as a
+plain script so the child never imports the `sift` package — or numpy — at all):
 
 - The child holds **no** references to your tools or memory. When the snippet does
   `call(...)`/`search(...)`, the request is **proxied over stdio back to the
@@ -105,3 +174,24 @@ Rule of thumb:
 | Your own tools, your own prompts | `InProcessSandbox` (default) |
 | Semi-trusted / third-party prompts | `SubprocessSandbox` |
 | Fully untrusted input | `SubprocessSandbox` **inside** a container/seccomp |
+
+## Against the frontier — what SIFT does, and what it doesn't
+
+Anthropic's *Code execution with MCP* names six patterns. Where SIFT stands, without
+flattering itself:
+
+| Pattern | SIFT |
+|---|---|
+| **Progressive disclosure** — load tool definitions on demand, not up front | ✅ this *is* SIFT. Their version reads a filesystem; SIFT searches a hybrid index, so the model doesn't have to guess directory names. |
+| **Context-efficient results** — filter in the execution environment | ✅ `returns=` filtering, `max_result_chars`, `on_result`, and (since 0.8.0) a prompt that actually asks for it. |
+| **Control flow in code** — loops/conditionals instead of chained calls | ✅ |
+| **Privacy-preserving** — intermediates never enter the context | ✅ by construction: only `output` leaves the sandbox. |
+| **State persistence** — carry results across snippets | ❌ **not supported.** Every `run_code` gets a fresh namespace. Compose within one snippet; SIFT will not pretend to have a session heap it does not have. |
+| **Reusable skills** — save a working snippet as a callable | ❌ **not supported.** Register it as a real tool instead: `@sift.tool` — it then gets a schema, response filtering, risk flags and retrieval, which an ad-hoc saved snippet does not. |
+
+The two gaps are deliberate for now. Both are real capabilities (they pay off in
+long autonomous sessions), and both would put mutable, model-authored state inside
+the trust boundary — which is a different security posture than the one
+[security.md](security.md) currently promises. If you need them today, keep the state
+in *your* tools (a `kv.get`/`kv.set` pair is a tool like any other) rather than in
+the sandbox.

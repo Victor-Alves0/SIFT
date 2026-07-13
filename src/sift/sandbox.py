@@ -47,6 +47,16 @@ _BLOCKED_ATTRS = frozenset({"format", "format_map", "mro"})
 
 _LINE_BUDGET = 200_000
 
+# The prompt text is DERIVED from the policy above so the two can never drift:
+# a rule that is enforced but not communicated makes the model discover it by
+# failing — and in tool calling every failure costs a whole context round-trip.
+SANDBOX_RULES = (
+    "Sandbox: no imports, no class definitions, no file/network access — the ONLY "
+    "way out is call(). Anything you would import (datetime, requests, os, json...) "
+    "must come from a tool instead. Available builtins: "
+    + ", ".join(sorted(_SAFE_BUILTIN_NAMES)) + "."
+)
+
 
 class SandboxError(Exception):
     """Raised when code-mode source violates the sandbox policy."""
@@ -84,6 +94,37 @@ def _validate(code: str) -> ast.AST:
     return tree
 
 
+def _binds_output(tree: ast.AST) -> bool:
+    return any(isinstance(n, ast.Name) and n.id == "output" and isinstance(n.ctx, ast.Store)
+               for n in ast.walk(tree))
+
+
+def _promote_trailing_expr(tree: ast.Module) -> bool:
+    """REPL semantics: a bare expression on the last line becomes ``output``.
+
+    Models routinely end a snippet with the value they mean to return (``[m["id"]
+    for m in msgs]``) instead of assigning it. That is not ambiguity — it is what
+    every REPL/notebook does — so honour it rather than burning a round-trip.
+    Left alone when the snippet already binds ``output`` (explicit beats implicit)
+    or when the last line is ``print(...)`` (stdout already carries it).
+
+    Returns True if the snippet produces ``output`` at all.
+    """
+    if _binds_output(tree):
+        return True
+    if not tree.body or not isinstance(tree.body[-1], ast.Expr):
+        return False
+    last = tree.body[-1]
+    value = last.value
+    if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "print":
+        return False
+    assign = ast.Assign(targets=[ast.Name(id="output", ctx=ast.Store())], value=value)
+    ast.copy_location(assign, last)      # keep line numbers: the budget tracer counts them
+    ast.fix_missing_locations(assign)
+    tree.body[-1] = assign
+    return True
+
+
 def _line_limiter(max_lines: int):
     count = [0]
 
@@ -109,9 +150,19 @@ def execute(code: str, call, search, schema, *, max_lines: int = _LINE_BUDGET) -
     try:
         tree = _validate(code)
     except SandboxError as exc:
-        return json.dumps({"error": f"SandboxError: {exc}"}, ensure_ascii=False)
+        # a policy violation must teach the policy, or the model just guesses again
+        return json.dumps({"error": f"SandboxError: {exc}", "hint": SANDBOX_RULES},
+                          ensure_ascii=False)
 
-    ns = {"__builtins__": _SAFE_BUILTINS, "call": call, "search": search,
+    produces_output = _promote_trailing_expr(tree)
+
+    calls = {"n": 0}
+
+    def counting_call(_path: str, /, **params):
+        calls["n"] += 1
+        return call(_path, **params)
+
+    ns = {"__builtins__": _SAFE_BUILTINS, "call": counting_call, "search": search,
           "schema": schema, "output": None}
     buf = io.StringIO()
     code_obj = compile(tree, "<sift-code>", "exec")
@@ -128,7 +179,25 @@ def execute(code: str, call, search, schema, *, max_lines: int = _LINE_BUDGET) -
 
     if ns.get("output") is not None:
         return json.dumps({"output": ns["output"]}, default=str, ensure_ascii=False)
-    return json.dumps({"stdout": buf.getvalue()}, default=str, ensure_ascii=False)
+    stdout = buf.getvalue()
+    if stdout:
+        return json.dumps({"stdout": stdout}, default=str, ensure_ascii=False)
+    if produces_output:
+        # the snippet DID set output; it is simply empty. Not an error — reporting
+        # one here would invite a retry of calls that already ran (a re-sent email).
+        return json.dumps({"output": None})
+
+    # Nothing assigned, nothing printed: the snippet threw its own work away and
+    # would otherwise return a hollow success ({"stdout": ""}) the model cannot
+    # learn from. Say so, and say what already happened — a retry must not repeat
+    # side effects.
+    err = {"error": "no result: nothing was assigned to `output` and nothing was printed",
+           "hint": "assign what you want back, e.g. output = call('some.tool.path', arg=1) "
+                   "(a bare expression on the last line also becomes `output`)"}
+    if calls["n"]:
+        err["ran"] = (f"{calls['n']} tool call(s) already executed — they were NOT undone; "
+                      "do not repeat any that have side effects")
+    return json.dumps(err, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------- backends

@@ -3,6 +3,7 @@ rebuild, schema-in-error, on_result hook, importer sanitization."""
 import json
 import time
 
+import pytest
 
 from sift import Sift
 from sift import quality
@@ -76,6 +77,51 @@ def test_selftest_catches_shadowed_tool():
     failures = quality.selftest(s)
     assert failures                                     # identical descs shadow each other
     assert failures[0].beaten_by in ("mail.gmail.read", "mail.gmail.read2")
+
+
+# ------------------------------------------------------- min_score calibration
+
+def test_suggest_min_score_without_negatives_is_a_ceiling(sift):
+    """No negatives -> the honest answer is 'go above this and you start rejecting
+    queries the catalog CAN serve', not a calibration."""
+    s = quality.suggest_min_score(sift)
+    assert 0 < s.suggested <= s.weakest_positive
+    assert s.strongest_negative is None
+    assert "CEILING" in s.format()
+
+
+def test_suggest_min_score_with_negatives_lands_between(sift):
+    s = quality.suggest_min_score(sift, negatives=["what is the capital of France"])
+    if s.separated:                       # the floor only exists if the two separate
+        assert s.strongest_negative < s.suggested < s.weakest_positive
+    assert s.strongest_negative_query == "what is the capital of France"
+
+
+def test_suggest_min_score_flags_an_unseparable_catalog(sift):
+    """A 'negative' that is really a positive must NOT silently produce a floor
+    that rejects real queries — say the catalog is the problem."""
+    s = quality.suggest_min_score(sift, negatives=["Read emails from the inbox newest first"])
+    assert not s.separated
+    assert "NOT SEPARABLE" in s.format()
+    assert s.suggested <= s.weakest_positive   # recall is still protected
+
+
+def test_suggest_min_score_needs_embeddings():
+    s = Sift(retrieval="bm25")
+    s.add_tool("a.b.c", lambda: {}, description="Do a thing")
+    s.build_index()
+    with pytest.raises(ValueError, match="embeddings"):
+        quality.suggest_min_score(s)
+
+
+def test_min_score_floor_produces_the_no_match_guidance(sift):
+    """The whole point of the floor: discovery can say 'nothing fits' — and tell
+    the model what to do instead of re-searching with a synonym."""
+    sift.gateway.min_score = 0.99         # nothing will clear this
+    out = sift.dispatch("search_tools", {"q": "book a flight to Lisbon"})
+    assert "no matching tools" in out
+    assert "Answer from your own knowledge" in out
+    assert "Do NOT search again" in out
 
 
 # ---------------------------------------------------------------- GapTracker

@@ -18,7 +18,7 @@ Sift(*, registry=None, embedder=None, model_name=None, retrieval="hybrid",
 | `model_name` | `bge-small-en-v1.5` | fastembed model (or `SIFT_EMBED_MODEL` env) |
 | `retrieval` | `"hybrid"` | `"hybrid"` · `"embedding"` · `"bm25"` |
 | `reranker` | `None` | object with `rerank(query, docs) -> list[float]` |
-| `min_score` | `0.0` | relevance floor (same scale in both search modes) |
+| `min_score` | `0.0` | relevance floor — below it, discovery says "no tool fits". `0.0` = always return the top-k. Calibrate with `quality.suggest_min_score()` |
 | `sandbox` | `InProcessSandbox` | code-mode backend |
 | `index_cache` | `None` | file path persisting vectors across restarts (auto-invalidated) |
 | `max_result_chars` | `100_000` | cap on results sent to the model (`None` disables) |

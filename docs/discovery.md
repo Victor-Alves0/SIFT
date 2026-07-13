@@ -190,20 +190,53 @@ sift = Sift(reranker=FastEmbedReranker())   # local, ONNX, no API key
 Any object with `rerank(query, docs) -> list[float]` works. It applies to both
 query search and the active request (reranking on the `action`).
 
-## Relevance floor (`min_score`)
+## Relevance floor (`min_score`) — teaching the model that "no tool" is an answer
 
-By default discovery always returns its best guesses. Set a floor so that when
-*nothing* is actually close, discovery returns nothing — an honest "no matching
-tools" instead of the nearest irrelevant tool:
+**By default (`min_score=0.0`) discovery always returns its top-k**, however bad the
+match. That is a hollow success of its own: it teaches the model that a tool always
+exists for whatever was asked, so it forces one — the *Unnecessary Tool Use* failure
+mode. A floor is what lets discovery say the honest thing:
 
-```python
-sift = Sift(min_score=0.3)   # cosine floor; tune per embedding model
+```
+# no matching tools — none of the available tools fit this request.
+# Answer from your own knowledge, or tell the user this cannot be done here.
+# Do NOT search again with a reworded query: the catalog has been searched.
 ```
 
-With an embedder the floor is a calibrated cosine in `[0, 1]`; with `bm25` only,
-the floor becomes "at least one query term matched". The scale is the **same in
-both search modes** (`search_tools` and `search_request`), so one tuned
-threshold applies everywhere.
+(The last line matters: without it the model just retries with a synonym and burns
+another full context for the same answer.)
+
+### Don't guess the number — calibrate it
+
+Nobody can pick this threshold for someone else's catalogue, so SIFT derives it from
+yours. Give it a few needs your catalogue genuinely **cannot** serve:
+
+```python
+from sift import quality
+
+s = quality.suggest_min_score(sift, negatives=[
+    "what is the capital of France", "write me a poem", "what's the weather on Mars",
+])
+print(s.format())
+# suggested min_score = 0.661
+#   weakest in-catalog query scored 0.768 ('any new emails?')
+#   strongest out-of-catalog query scored 0.553 ("what's the weather on Mars")
+
+sift = Sift(min_score=s.suggested)
+```
+
+It scores every tool's own description and `examples` (what a real query looks like)
+against your negatives, and puts the floor between them. It is honest when it can't
+help:
+
+- **`separated=False`** — a negative outscored a real query. No floor can tell them
+  apart; the *descriptions* are the problem. Run [`lint`/`selftest`](quality.md) first.
+- **no `negatives=`** — you get a **ceiling**, not a calibration: the highest floor
+  that still admits every tool. Above it you start rejecting queries you can serve.
+
+With an embedder the floor is a cosine in `[0, 1]`; with `bm25` only, it becomes "at
+least one query term matched". The scale is the **same in both search modes**
+(`search_tools` and `search_request`), so one tuned threshold applies everywhere.
 
 ## Tuning checklist
 

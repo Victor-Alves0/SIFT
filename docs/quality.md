@@ -52,9 +52,28 @@ tool — your catalogue's blind spots) and **execution counts** (candidates for
 the search round-trip for what's asked constantly). Compose it inside your own
 observer if you already have one — it's just a callable.
 
+## `suggest_min_score()` — calibrate the relevance floor
+
+```python
+s = quality.suggest_min_score(sift, negatives=[
+    "what is the capital of France", "what's the weather on Mars",
+])
+print(s.format())
+sift = Sift(min_score=s.suggested)
+```
+
+`min_score` decides when discovery answers **"no tool fits — answer directly"**
+instead of returning its best guess. It defaults to `0.0` (off), and it is not a
+number anyone can guess for your catalogue. This scores every tool's own description
+and `examples` against needs you say the catalogue *cannot* serve, and puts the floor
+between the two distributions. It tells you when it can't help: `separated=False`
+means a negative outscored a real query — no threshold fixes that, the descriptions
+do (see `lint`/`selftest` above). Full walkthrough in
+[discovery.md](discovery.md#relevance-floor-min_score--teaching-the-model-that-no-tool-is-an-answer).
+
 ## The loop
 
-1. Before shipping: `lint()` clean, `selftest()` green.
+1. Before shipping: `lint()` clean, `selftest()` green, `min_score` calibrated.
 2. In production: `GapTracker` attached.
 3. Periodically: fill `gaps()` with new tools, `pin()` what `suggest_pins()`
    surfaces, re-run 1.
