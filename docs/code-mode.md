@@ -5,11 +5,29 @@ model write a short Python snippet that orchestrates many tools in a **single
 turn** (the CodeAct / Cloudflare "code mode" pattern), collapsing multi-turn
 overhead.
 
-## When code mode is NOT the answer
+## When code mode is NOT the answer — start here
 
-Code mode is not free: it needs a sandbox, it is harder to debug than a clean list
-of tool calls, and the model can emit Python that doesn't compile. For a **single
-tool call**, writing code is pure overhead — a plain call cannot fail to parse.
+**We benchmarked code mode against classic tool calling and code mode lost.** On a
+100-tool catalogue with a live model: classic 3.1 turns / 6.5k effective tokens vs
+code mode 3.3 turns / 8.4k, both at 100% success
+([results](../benchmarks/RESULTS.md#code-mode-vs-classic-tool-calling)).
+
+The reason is worth internalising before you reach for this mode. Code mode's headline
+pitch is "collapse N round-trips into one". But modern function calling emits
+**parallel tool calls** — on our N+1 task the classic condition ran six CRM lookups in
+a *single turn*, no sandbox, no Python. **The industry's main argument for code mode is
+already free.**
+
+What parallel calls genuinely *cannot* do — and where code mode still earns its keep:
+
+- **Filtering a huge result before it reaches the context.** A parallel call still
+  puts its whole payload in the conversation. A snippet can reduce 10,000 rows to 5.
+- **Data-dependent calls** — call B's arguments come from call A's *result*.
+- **Real control flow** — conditionals, retries, early exit.
+
+Code mode also is not free: it needs a sandbox, it is harder to debug than a clean list
+of tool calls, and the model can emit Python that doesn't compile. For a **single tool
+call**, writing code is pure overhead — a plain call cannot fail to parse.
 
 That is why `code_tools()` exposes **three** tools, not two:
 

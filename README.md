@@ -370,17 +370,33 @@ nearest-but-irrelevant tool when the catalogue doesn't cover the request:
 sift = Sift(min_score=0.3)   # cosine floor (tune per embedding model)
 ```
 
-## Code mode (compose many tools in one turn)
+## Code mode (opt-in — and read the benchmark first)
 
-Instead of one round-trip per tool, let the model write a snippet that
-orchestrates tools in a single turn (collapses multi-turn overhead):
+Code mode lets the model write a snippet that orchestrates several tools in one
+turn. It is **not the default, and our own benchmark says it should not be**:
+
+> On a 100-tool catalogue with a live model, classic tool calling beat code mode on
+> every metric — 3.1 vs 3.3 turns and **6.5k vs 8.4k effective tokens**, at 100%
+> success for both. The reason is measurable: modern function calling emits
+> **parallel tool calls**, so a 6-lookup fan-out already collapses into one turn
+> without a sandbox. Code mode's headline advantage is mostly already yours for free.
+> ([full results](benchmarks/RESULTS.md#code-mode-vs-classic-tool-calling))
+
+Use it when a task genuinely needs what parallel calls cannot do: **filtering a huge
+result before it reaches the context**, real control flow, or calls whose arguments
+depend on an earlier call's output.
 
 ```python
-tools  = sift.code_tools()          # search_tools + run_code
+tools  = sift.code_tools()          # search_tools + execute_tool + run_code
 system = sift.code_system_prompt
 # in the loop, run_code executes:  call(path, **params), search(q), schema(path)
 sift.run_code("output = call('google_workspace.gmail.read', m=1)")
 ```
+
+Note `execute_tool` is in that surface: a code-mode agent that can only `run_code`
+pays sandbox overhead — and a real parse-failure rate — to do what one JSON call
+does. In the benchmark that cost it **19 snippets vs 2**, and 5 of those 19 hit a
+sandbox failure mode.
 
 Execution goes through a **pluggable sandbox** backend:
 

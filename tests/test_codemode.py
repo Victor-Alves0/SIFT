@@ -81,6 +81,24 @@ def test_run_code_blocks_class_definitions(sift):
     assert "error" in out and "class" in out["error"].lower()
 
 
+def test_observer_sees_tools_called_from_inside_a_snippet():
+    """Telemetry that only shows a fat `run_code` and none of the tools it ran is
+    useless — and GapTracker.suggest_pins() would under-count code-mode traffic."""
+    from sift import Sift
+    from sift.quality import GapTracker
+
+    tracker = GapTracker()
+    s = Sift(retrieval="bm25", observer=tracker)
+    s.add_tool("utils.time.now", lambda: {"iso": "2026-07-13"}, description="Current date")
+    s.build_index()
+
+    s.dispatch("run_code", {"code": "output = call('utils.time.now')"})
+    assert tracker.executions["utils.time.now"] == 1     # was 0: dispatch-only emit
+
+    s.dispatch("execute_tool", {"path": "utils.time.now"})
+    assert tracker.executions["utils.time.now"] == 2     # and no double-counting
+
+
 def test_trailing_expression_becomes_output(sift):
     """REPL shim: the model ends with the value it means to return, unassigned."""
     out = json.loads(sift.run_code("call('google_workspace.gmail.read', m=1)['subject']"))

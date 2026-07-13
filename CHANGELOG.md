@@ -3,6 +3,37 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
+## [0.8.1] — 2026-07-13
+
+Benchmarked code mode for the first time — and it lost. Two library bugs surfaced
+while doing it.
+
+### Added
+- **`benchmarks/codemode_bench.py`** — code mode vs classic tool calling, live model,
+  single-call and composite tasks. Result: **classic won on every metric** (3.1 vs 3.3
+  turns, 6.5k vs 8.4k effective tokens, both 100%). Measured mechanism: function
+  calling emits **parallel tool calls**, so a 6-lookup fan-out already collapses into
+  one turn without a sandbox — which is most of what code mode was for. Published as a
+  negative result; `README` and `docs/code-mode.md` now lead with it instead of the
+  "collapses multi-turn overhead" pitch. It *did* validate 0.8.0: giving code mode an
+  `execute_tool` cut snippets written from **19 to 2**, and 5 of those 19 (26%) hit a
+  sandbox failure mode 0.8.0 fixed.
+  The harness gates itself on `quality.selftest()` — the first run was invalid because
+  synthetic distractors shadowed the gold tools, and `selftest` named it exactly.
+
+### Fixed
+- **The observer never saw tools called from inside a snippet.** `execute` events were
+  emitted from `dispatch` only, so code-mode traffic showed up as one fat `run_code`
+  with none of the tools it ran — and `GapTracker.suggest_pins()` under-counted every
+  tool used from a snippet. Both `execute_tool` and `call()` inside the sandbox now
+  funnel through `Sift.execute_tool`, which is where the event is emitted.
+- **Code mode got a weaker `search_tools` than classic mode.** `code_tool_specs()`
+  defined its own reduced spec taking only `q`, so the model could not issue an active
+  tool request (`domain` + `action`) — measurably the sharper route (99.5% vs 96.2%
+  top-1 on the MCP-Zero dataset). It now reuses `metatools.tool_specs()` unchanged.
+- `lint()` warns when `min_score` is 0 — otherwise nobody discovers they need
+  `suggest_min_score()`, and discovery silently keeps returning its best guess forever.
+
 ## [0.8.0] — 2026-07-13
 
 Nothing in SIFT may succeed hollowly. In tool calling every wasted round-trip

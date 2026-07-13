@@ -12,6 +12,7 @@ back to the parent). The snippet runs in a constrained namespace exposing
 """
 from __future__ import annotations
 
+from .metatools import tool_specs
 from .sandbox import SANDBOX_RULES, InProcessSandbox, SandboxError  # re-exported for back-compat
 
 __all__ = ["CODE_SYSTEM_PROMPT", "SANDBOX_RULES", "code_tool_specs", "run_code", "SandboxError"]
@@ -22,7 +23,8 @@ __all__ = ["CODE_SYSTEM_PROMPT", "SANDBOX_RULES", "code_tool_specs", "run_code",
 CODE_SYSTEM_PROMPT = f"""You orchestrate tools by WRITING CODE, composing many calls in a single turn.
 
 Tools:
-1. search_tools(q) — find tool paths (schema inline) by need.
+1. search_tools — find tool paths (schema inline) by need. Prefer the active request
+   (domain + action) over a raw query; pass path to browse.
 2. execute_tool(path, params) — run ONE tool. Use this when one call answers the
    request: it is cheaper and safer than writing code for it.
 3. run_code(code) — for anything COMPOSITE (2+ calls, loops, conditionals, or
@@ -46,30 +48,26 @@ that performs all the calls and sets `output`. Then answer the user concisely.
 
 
 def code_tool_specs() -> list[dict]:
-    """Tool specs for code mode: search_tools + execute_tool + run_code.
+    """Tool specs for code mode: the 2 meta-tools + run_code.
 
-    ``execute_tool`` is here on purpose. Code mode without it forces the model to
+    Both meta-tools come from :func:`sift.metatools.tool_specs` unchanged — code mode
+    must not get a WEAKER surface than classic mode. A reduced ``search_tools`` that
+    only took ``q`` silently downgraded discovery to query-only, giving up the active
+    tool request (``domain`` + ``action``), which is measurably the sharper route.
+
+    ``execute_tool`` is here on purpose too. Code mode without it forces the model to
     write Python even for a single call — paying sandbox overhead and a real
     parse-failure rate to do what one JSON call does. Code mode wins on COMPOSITE
     work (many calls, control flow, filtering a big result); for one call, direct
     execution is cheaper and cannot fail to compile.
     """
-    return [
-        {"type": "function", "function": {
-            "name": "search_tools",
-            "description": "Find tools by need. Returns matches with schema inline.",
-            "parameters": {"type": "object",
-                           "properties": {"q": {"type": "string", "description": "the need"}},
-                           "required": ["q"]}}},
-        {"type": "function", "function": {
-            "name": "execute_tool",
-            "description": ("Run ONE tool by path. Prefer this over run_code when a single "
-                            "call answers the request — no code to write, nothing to compile."),
-            "parameters": {"type": "object",
-                           "properties": {
-                               "path": {"type": "string", "description": "full tool path"},
-                               "params": {"type": "object", "description": "tool arguments"}},
-                           "required": ["path"]}}},
+    specs = tool_specs()
+    for spec in specs:   # nudge the choice at the point the model reads it
+        if spec["function"]["name"] == "execute_tool":
+            spec["function"]["description"] += (
+                " Prefer this over run_code when a single call answers the request — "
+                "no code to write, nothing to compile.")
+    return specs + [
         {"type": "function", "function": {
             "name": "run_code",
             "description": ("Run Python that orchestrates SEVERAL tools in ONE turn (2+ calls, "

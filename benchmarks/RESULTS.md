@@ -1,5 +1,70 @@
 # SIFT benchmarks
 
+## Code mode vs classic tool calling
+
+**A negative result about our own feature — published because we ran the experiment.**
+
+Code mode (the model writes a snippet that orchestrates several tools) is sold across
+the industry as a way to collapse multi-turn overhead. We finally measured it, on a
+100-tool catalogue, 10 tasks (5 answerable with a single call, 5 composite), live model
+(`deepseek-v4-flash`, reasoning low, prompt caching on):
+
+| condition | success | turns | raw tok | eff tok |
+|---|--:|--:|--:|--:|
+| **classic (search + execute)** | **100%** | **3.1** | **7,146** | **6,455** |
+| code 0.7 (as shipped: run_code only) | 100% | 3.9 | 10,208 | 7,490 |
+| code 0.8 (as shipped: + execute_tool) | 100% | 3.3 | 9,107 | 8,370 |
+
+**Classic tool calling won — including on the composite tasks.** The mechanism is
+measured, not guessed: modern function calling emits **parallel tool calls**. On the
+N+1 task ("for every organizer of today's events, check the CRM"), the classic
+condition did this:
+
+```
+turn 0: 2 tool calls   search_tools ×2
+turn 1: 1 tool call    execute_tool(cal.google.list)
+turn 2: 6 tool calls   execute_tool(crm.contacts.get) ×6      <- one turn, six lookups
+turn 3: final answer
+```
+
+Six lookups in **one round-trip**, no sandbox, no Python. Collapsing a fan-out into a
+single turn is exactly what code mode exists to do — and function calling already does
+it. Code mode's remaining, real case is what parallel calls *cannot* do: **filter a
+large result before it reaches the context**, genuine control flow, and calls whose
+arguments depend on an earlier call's output. That case is narrower than the hype.
+
+### What the benchmark DID validate: the 0.8.0 changes
+
+Between the two code-mode versions the deltas are clear:
+
+| | code 0.7 | code 0.8 |
+|---|--:|--:|
+| turns | 3.9 | **3.3** |
+| raw tokens | 10,208 | **9,107** |
+| **snippets the model wrote** | **19** | **2** |
+| ...of which hit a sandbox failure mode | **5 (26%)** | **0** |
+
+Giving code mode an `execute_tool` (0.8.0) stopped the model writing Python for
+single-call requests: 19 snippets → 2. And of 0.7's 19 snippets, **5 (26%) ended in a
+bare expression, tried an `import`, or produced nothing** — each of which, before
+0.8.0, returned a hollow `{"stdout": ""}` or an error with no guidance, i.e. **a
+wasted round-trip that re-sends the entire conversation**.
+
+Honest caveats: one run, 10 tasks, one model — directional, not definitive. The
+composite tasks may still under-represent the case where filtering in the sandbox pays
+(the email tasks cost code mode *more*, which we have not fully explained). And the
+catalogue is ours.
+
+A note on how we got here: the first run of this benchmark was **invalid** — the
+synthetic distractors shadowed the gold tools (`calendar.events.list` outranked the
+gold `cal.google.list`), so the model burned turns on a distractor that returned
+`{"ok": true}` forever. `sift.quality.selftest()` names that failure exactly, so
+`build_sift()` now **gates the benchmark on it**: if a gold tool can't be found by its
+own description, the run aborts instead of printing a number that measures our
+catalogue instead of code mode.
+
+Reproduce: `python benchmarks/codemode_bench.py`
+
 ## Independent dataset: MCP-tools needle (from the MCP-Zero paper)
 
 The first SIFT evaluation on a catalogue we did NOT construct: the public

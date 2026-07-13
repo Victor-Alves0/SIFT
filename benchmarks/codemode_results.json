@@ -1,0 +1,32 @@
+{
+  "classic (search+execute)": {
+    "success": 1.0,
+    "llm_calls": 3.1,
+    "raw": 7146.3,
+    "eff": 6455.1,
+    "snippets": 0,
+    "shim_saves": 0,
+    "import_tries": 0,
+    "no_result": 0
+  },
+  "code 0.7 (as shipped)": {
+    "success": 1.0,
+    "llm_calls": 3.9,
+    "raw": 10208.4,
+    "eff": 7489.68,
+    "snippets": 19,
+    "shim_saves": 2,
+    "import_tries": 1,
+    "no_result": 2
+  },
+  "code 0.8 (as shipped)": {
+    "success": 1.0,
+    "llm_calls": 3.3,
+    "raw": 9107.3,
+    "eff": 8370.02,
+    "snippets": 2,
+    "shim_saves": 0,
+    "import_tries": 0,
+    "no_result": 0
+  }
+}

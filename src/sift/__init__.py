@@ -40,7 +40,7 @@ from .metatools import META_TOOL_NAMES, SYSTEM_PROMPT, tool_specs
 from .registry import Registry, ToolDef
 
 __all__ = ["Sift", "Registry", "ToolDef", "SearchResult", "SYSTEM_PROMPT", "tool_specs"]
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 _log = logging.getLogger("sift")
 
@@ -245,12 +245,37 @@ class Sift:
     def get_tool_schema(self, path: str) -> str:
         return self.gateway.get_tool_schema(path)
 
+    # Both the meta-tool ``dispatch`` and ``call()`` inside a code-mode snippet
+    # funnel through here — so this is the ONLY place the observer can see every
+    # execution. Emitting from dispatch alone made in-snippet tools invisible:
+    # telemetry showed a single fat `run_code` and none of the tools it ran, and
+    # GapTracker.suggest_pins() under-counted anything used from code mode.
     def execute_tool(self, path: str, params: dict | None = None) -> dict:
-        return self.gateway.execute_tool(path, params)
+        import time
+        t0 = time.perf_counter()
+        try:
+            res = self.gateway.execute_tool(path, params)
+        except Exception as exc:
+            self._emit("execute", {"path": path, "ok": False, "error": _exc_message(exc),
+                                   "ms": round((time.perf_counter() - t0) * 1000, 1)})
+            raise
+        self._emit("execute", {"path": path, "ok": True,
+                               "ms": round((time.perf_counter() - t0) * 1000, 1)})
+        return res
 
     async def aexecute_tool(self, path: str, params: dict | None = None) -> dict:
         """Async execution — required for ``async def`` tools; fine for sync ones."""
-        return await self.gateway.aexecute_tool(path, params)
+        import time
+        t0 = time.perf_counter()
+        try:
+            res = await self.gateway.aexecute_tool(path, params)
+        except Exception as exc:
+            self._emit("execute", {"path": path, "ok": False, "error": _exc_message(exc),
+                                   "ms": round((time.perf_counter() - t0) * 1000, 1)})
+            raise
+        self._emit("execute", {"path": path, "ok": True,
+                               "ms": round((time.perf_counter() - t0) * 1000, 1)})
+        return res
 
     async def adispatch(self, name: str, arguments: dict | str) -> str:
         """Async twin of ``dispatch``: awaits async tools; ``run_code`` is moved
@@ -262,19 +287,16 @@ class Sift:
                 path = (args.get("path") or "").strip()
                 if not path:
                     return _error_json("execute_tool requires a 'path' argument", PATH_HINT)
-                res = await self.aexecute_tool(path, args.get("params") or {})
-                self._emit("execute", {"path": path, "ok": True, "ms": None})
+                res = await self.aexecute_tool(path, args.get("params") or {})  # emits
                 return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             if "__" in name:  # pinned/promoted tool called directly by its flat name
                 path = name.replace("__", ".")
-                res = await self.aexecute_tool(path, args)
-                self._emit("execute", {"path": path, "ok": True, "ms": None})
+                res = await self.aexecute_tool(path, args)                     # emits
                 return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             if name == "run_code":
                 return self._cap(await asyncio.to_thread(self.run_code, args["code"]))
         except Exception as exc:
-            msg = _exc_message(exc)
-            self._emit("execute", {"path": args.get("path"), "ok": False, "error": msg, "ms": None})
+            msg = _exc_message(exc)   # aexecute_tool already emitted the failure
             return _error_json(msg, PATH_HINT if isinstance(exc, KeyError) else None)
         return self.dispatch(name, args)  # search/browse are cheap and sync-safe
 
@@ -325,22 +347,18 @@ class Sift:
                 path = (args.get("path") or "").strip()
                 if not path:   # missing/wrong argument key — say so, don't mislead
                     return _error_json("execute_tool requires a 'path' argument", PATH_HINT)
-                res = self.execute_tool(path, args.get("params") or {})
-                self._emit("execute", {"path": path, "ok": True,
-                                       "ms": round((time.perf_counter() - t0) * 1000, 1)})
+                res = self.execute_tool(path, args.get("params") or {})   # emits "execute"
                 return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             if "__" in name:  # a pinned/promoted tool called directly by its flat name
                 path = name.replace("__", ".")
-                res = self.execute_tool(path, args)   # args ARE the params here
-                self._emit("execute", {"path": path, "ok": True,
-                                       "ms": round((time.perf_counter() - t0) * 1000, 1)})
+                res = self.execute_tool(path, args)   # args ARE the params here; emits
                 return self._cap(json.dumps(res, ensure_ascii=False, default=str))
             return json.dumps({"error": f"unknown meta-tool {name!r}"})
         except Exception as exc:  # surfaced back to the model as a tool result
             msg = _exc_message(exc)
-            self._emit("execute" if name == "execute_tool" else name,
-                       {"path": args.get("path"), "ok": False, "error": msg,
-                        "ms": round((time.perf_counter() - t0) * 1000, 1)})
+            if name != "execute_tool" and "__" not in name:   # execute_tool emits its own
+                self._emit(name, {"path": args.get("path"), "ok": False, "error": msg,
+                                  "ms": round((time.perf_counter() - t0) * 1000, 1)})
             # an unknown path gets the recovery hint — models retry instead of quitting
             hint = PATH_HINT if isinstance(exc, KeyError) else None
             return self._error_with_schema(exc, msg, hint, args)
