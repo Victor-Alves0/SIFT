@@ -2,66 +2,78 @@
 
 ## Code mode vs classic tool calling
 
-**A negative result about our own feature — published because we ran the experiment.**
+**Code mode is not a general win. It has exactly one shape it wins, and it wins that
+one by 2×.** 100-tool catalogue, live model (`deepseek-v4-flash`, reasoning low, prompt
+caching on), 11 tasks. Effective tokens (cached input discounted) — the cost proxy:
 
-Code mode (the model writes a snippet that orchestrates several tools) is sold across
-the industry as a way to collapse multi-turn overhead. We finally measured it, on a
-100-tool catalogue, 10 tasks (5 answerable with a single call, 5 composite), live model
-(`deepseek-v4-flash`, reasoning low, prompt caching on):
+| task shape | classic | code 0.8 | verdict |
+|---|--:|--:|---|
+| **single** (5) — one call answers it | **3,438** | 3,438 | tie |
+| **composite** (5) — a few calls, light payloads | **5,721** | 6,222 | classic |
+| **fan-out** (1) — read N items, keep a little | 8,373 | **4,146** | **code mode, 2.0×** |
+| **all** (11) | **4,696** | 4,768 | tie (1.5%) |
 
-| condition | success | turns | raw tok | eff tok |
-|---|--:|--:|--:|--:|
-| **classic (search + execute)** | **100%** | **3.1** | **7,146** | **6,455** |
-| code 0.7 (as shipped: run_code only) | 100% | 3.9 | 10,208 | 7,490 |
-| code 0.8 (as shipped: + execute_tool) | 100% | 3.3 | 9,107 | 8,370 |
+100% success in every condition. So: **pick code mode by the shape of the work, not by
+default** — and if none of your work is fan-out shaped, classic tool calling is
+strictly simpler and no more expensive.
 
-**Classic tool calling won — including on the composite tasks.** The mechanism is
-measured, not guessed: modern function calling emits **parallel tool calls**. On the
-N+1 task ("for every organizer of today's events, check the CRM"), the classic
-condition did this:
+### Why classic is so hard to beat: parallel tool calls
+
+Code mode's industry pitch is "collapse N round-trips into one". Measured, that pitch is
+mostly already yours for free — modern function calling emits **parallel tool calls**:
 
 ```
-turn 0: 2 tool calls   search_tools ×2
-turn 1: 1 tool call    execute_tool(cal.google.list)
 turn 2: 6 tool calls   execute_tool(crm.contacts.get) ×6      <- one turn, six lookups
-turn 3: final answer
 ```
 
-Six lookups in **one round-trip**, no sandbox, no Python. Collapsing a fan-out into a
-single turn is exactly what code mode exists to do — and function calling already does
-it. Code mode's remaining, real case is what parallel calls *cannot* do: **filter a
-large result before it reaches the context**, genuine control flow, and calls whose
-arguments depend on an earlier call's output. That case is narrower than the hype.
+Six CRM lookups in one round-trip, no sandbox, no Python. **Turns are not where code
+mode wins.**
 
-### What the benchmark DID validate: the 0.8.0 changes
+### Where it does win: payload, not round-trips
 
-Between the two code-mode versions the deltas are clear:
+On the fan-out task ("open my 4 most recent emails, tell me which mention QUARTERLY"),
+classic and code mode take the **same 4 turns** — but classic emits 4 parallel
+`execute_tool` reads, so **4 full email bodies land in the conversation and stay
+there**. A snippet loops the same 4 ids inside the sandbox and returns one line.
+Same turns, half the tokens (8,373 → 4,146 effective).
 
-| | code 0.7 | code 0.8 |
+That is the whole case for code mode, and it is a real one: **it is the only way to
+keep a large intermediate result out of the context.** Parallel calls cannot do it;
+neither can anything else in the stack.
+
+### The 0.8.2 correction: the model has to *choose* it
+
+0.8.0 added `execute_tool` to the code-mode surface (rightly — it stopped the model
+writing Python for single calls: **29 snippets → 2**, and 0.7 wasted a turn on ~5% of
+its snippets, which is what 0.8.0 fixed). But an integrator reported the side effect,
+and the benchmark reproduced it: **on the fan-out task the model then preferred
+`execute_tool` and abandoned batching entirely — 0 snippets in 3/3 runs**, at ~76% more
+tokens.
+
+The rule was in `CODE_SYSTEM_PROMPT` ("run_code for 2+ calls") but too abstract to fire
+at the moment of choice. 0.8.2 states it as the situation the model can actually see —
+*"the same tool once per item in a list → ONE run_code with a loop; never one
+execute_tool per item"*:
+
+| code 0.8, fan-out task, n=3 | snippets used | raw tokens |
 |---|--:|--:|
-| turns | 3.9 | **3.3** |
-| raw tokens | 10,208 | **9,107** |
-| **snippets the model wrote** | **19** | **2** |
-| ...of which hit a sandbox failure mode | **5 (26%)** | **0** |
+| before (0.8.1 prompt) | **0 / 3** | ~10,960 |
+| after (0.8.2 prompt) | **3 / 3** | **~8,470 (−23%)** |
 
-Giving code mode an `execute_tool` (0.8.0) stopped the model writing Python for
-single-call requests: 19 snippets → 2. And of 0.7's 19 snippets, **5 (26%) ended in a
-bare expression, tried an `import`, or produced nothing** — each of which, before
-0.8.0, returned a hollow `{"stdout": ""}` or an error with no guidance, i.e. **a
-wasted round-trip that re-sends the entire conversation**.
+### Honest caveats
 
-Honest caveats: one run, 10 tasks, one model — directional, not definitive. The
-composite tasks may still under-represent the case where filtering in the sandbox pays
-(the email tasks cost code mode *more*, which we have not fully explained). And the
-catalogue is ours.
+One model, one catalogue (ours), few tasks — directional. And this benchmark has now
+been **wrong twice**, both times because the catalogue lied:
 
-A note on how we got here: the first run of this benchmark was **invalid** — the
-synthetic distractors shadowed the gold tools (`calendar.events.list` outranked the
-gold `cal.google.list`), so the model burned turns on a distractor that returned
-`{"ok": true}` forever. `sift.quality.selftest()` names that failure exactly, so
-`build_sift()` now **gates the benchmark on it**: if a gold tool can't be found by its
-own description, the run aborts instead of printing a number that measures our
-catalogue instead of code mode.
+1. First run: synthetic distractors *shadowed* the gold tools (`calendar.events.list`
+   outranked the gold `cal.google.list`), so the model burned turns on a distractor that
+   returned `{"ok": true}` forever. `sift.quality.selftest()` named that exactly, so the
+   harness now **gates on it** and aborts rather than print a number that measures our
+   catalogue instead of code mode.
+2. Second run: `mail.gmail.search` returned the message **bodies**, so `read(id)` was
+   redundant and there was no genuine fan-out case at all — which is how 0.8.1 shipped
+   the headline "classic wins on everything". It doesn't. Search now returns headers
+   only, like every real mail API.
 
 Reproduce: `python benchmarks/codemode_bench.py`
 

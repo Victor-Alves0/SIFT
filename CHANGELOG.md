@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semver.
 
+## [0.8.2] — 2026-07-13
+
+An integrator caught a regression 0.8.0 introduced — and finding it proved the 0.8.1
+benchmark had been measuring the wrong thing. **0.8.1's headline was wrong and is
+retracted.**
+
+### Fixed
+- **Code mode stopped batching.** 0.8.0 added `execute_tool` to the code-mode surface
+  (rightly: it stopped the model writing Python for single calls, 29 snippets → 2). The
+  side effect, reported from production and then reproduced: on a **fan-out** — "open
+  each of these 4 emails" — the model preferred one `execute_tool` per item and
+  abandoned `run_code` entirely (**0 snippets in 3/3 runs, ~76% more tokens**). Turns
+  don't suffer, because parallel tool calls run them in one round-trip — so nothing
+  looks broken; but every payload lands in the conversation permanently.
+  `CODE_SYSTEM_PROMPT` had the rule ("run_code for 2+ calls") but too abstract to fire
+  at the moment of choice. It now names the situation the model can actually see —
+  *"the same tool once per item in a list → ONE run_code with a loop; NEVER one
+  execute_tool per item"* — and the `execute_tool` spec says the same at the point of
+  use. Measured: **snippets 0/3 → 3/3, tokens −23%** on the fan-out task.
+
+### Changed
+- **`benchmarks/RESULTS.md`: the code-mode verdict is corrected.** 0.8.1 concluded
+  "classic tool calling beat code mode on every metric". That benchmark had no genuine
+  fan-out case: its `mail.gmail.search` returned the message **bodies**, so `read(id)`
+  was redundant and the model rightly skipped it. With search returning headers only —
+  like every real mail API — the picture is:
+
+  | task shape | classic | code mode | |
+  |---|--:|--:|---|
+  | single (5) | **3,438** | 3,438 | tie |
+  | composite, light payloads (5) | **5,721** | 6,222 | classic |
+  | **fan-out (1)** — read N items, keep a little | 8,373 | **4,146** | **code mode, 2.0×** |
+  | all (11) | **4,696** | 4,768 | tie |
+
+  So: code mode is **not** a general win, and **not** a loss either — it wins exactly
+  one shape, and wins it by 2×. Turns are not where it wins (parallel tool calls
+  already collapse a fan-out); **payload** is. README and `docs/code-mode.md` now say
+  that instead of 0.8.1's "code mode lost".
+
 ## [0.8.1] — 2026-07-13
 
 Benchmarked code mode for the first time — and it lost. Two library bugs surfaced

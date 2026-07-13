@@ -78,8 +78,11 @@ _BODY = ("Hi team, following up on the quarterly numbers. " * 40)   # ~2 KB per 
 
 
 def _messages(m: int, domain: str = "acme.com") -> list[dict]:
+    """Headers only — the BODY is behind mail.gmail.read(id), like every real mail API.
+    (A search that already leaks the bodies makes the read redundant and the fan-out
+    task meaningless — the first version of this benchmark did exactly that.)"""
     return [{"id": f"m{i}", "from": f"user{i}@{domain if i % 2 == 0 else 'other.org'}",
-             "subject": f"Re: report {i}", "date": "2026-07-13", "body": _BODY}
+             "subject": f"Re: report {i}", "date": "2026-07-13", "snippet": _BODY[:200]}
             for i in range(m)]
 
 
@@ -99,6 +102,15 @@ def build_sift(size: int) -> Sift:
             examples=["find emails from my boss", "show me my latest emails"])
     def _search(q="", m=20):
         return {"messages": _messages(int(m))}
+
+    # search returns ids + headers; the BODY only comes from read(id). This is the
+    # shape an integrator reported: the model reads N ids one execute_tool at a time
+    # instead of looping them inside a single run_code.
+    @s.tool("mail.gmail.read", description="Read the full body of one email message by its id",
+            params={"id": "string:n::the message id"}, returns=["id", "subject", "body"])
+    def _read(id):
+        return {"id": id, "subject": f"Re: report {id}",
+                "body": _BODY + (" QUARTERLY RESULTS ATTACHED." if id in ("m1", "m3") else "")}
 
     @s.tool("mail.gmail.send", description="Send a new email message to a recipient",
             params={"to": "string:n::recipient", "subject": "string:n::subject",
@@ -190,6 +202,13 @@ TASKS: list[Task] = [
          {"files.drive.search"}, "composite"),
     Task("Among my 20 latest emails, list the subjects of the ones from acme.com only.",
          {"mail.gmail.search"}, "composite"),
+
+    # the integrator's exact shape: search returns ids, then the body of EACH must be
+    # read. The right move is one run_code looping the ids; the tempting move is one
+    # execute_tool per id, i.e. a round-trip per email.
+    Task("Take my 4 most recent emails, open each one, and tell me which of them "
+         "mention 'QUARTERLY'.",
+         {"mail.gmail.search", "mail.gmail.read"}, "fanout"),
 ]
 
 
@@ -204,6 +223,8 @@ class Run:
     completion_tokens: int = 0
     cached_tokens: int = 0
     executed: set[str] = field(default_factory=set)
+    tool_calls: int = 0
+    max_fanout: int = 0      # most tool calls the model emitted in ONE turn (parallel)
     snippets: int = 0
     shim_saves: int = 0      # v0.7 would have returned a hollow {"stdout": ""} here
     import_tries: int = 0    # v0.7 error gave no guidance
@@ -286,6 +307,8 @@ def run_task(call_model, sift: Sift, task: Task, *, system: str, specs: list[dic
             tcs = msg.get("tool_calls") or []
             if not tcs:
                 break
+            r.tool_calls += len(tcs)
+            r.max_fanout = max(r.max_fanout, len(tcs))   # >1 = parallel tool calling
             for tc in tcs:
                 name = tc["function"]["name"]
                 try:
@@ -343,6 +366,8 @@ def summarise(runs: list[Run]) -> dict:
         "llm_calls": sum(r.llm_calls for r in runs) / n,
         "raw": sum(r.tokens for r in runs) / n,
         "eff": sum(r.effective() for r in runs) / n,
+        "tool_calls": sum(r.tool_calls for r in runs) / n,
+        "max_fanout": max((r.max_fanout for r in runs), default=0),
         "snippets": sum(r.snippets for r in runs),
         "shim_saves": sum(r.shim_saves for r in runs),
         "import_tries": sum(r.import_tries for r in runs),
@@ -374,16 +399,18 @@ def main() -> None:
         results[cond] = runs
         print(flush=True)
 
-    for shape in ("single", "composite", "all"):
+    for shape in ("single", "composite", "fanout", "all"):
         pick = [i for i, t in enumerate(tasks) if shape in (t.shape, "all")]
         if not pick:
             continue
-        print(f"\n=== {shape.upper()} tasks ({len(pick)}) " + "=" * 52)
-        print(f"{'condition':<26} | {'success':>7} | {'turns':>5} | {'raw tok':>8} | {'eff tok':>8}")
-        print("-" * 74)
+        print(f"\n=== {shape.upper()} tasks ({len(pick)}) " + "=" * 46)
+        print(f"{'condition':<26} | {'success':>7} | {'turns':>5} | {'calls':>5} | "
+              f"{'par':>3} | {'raw tok':>8} | {'eff tok':>8}")
+        print("-" * 88)
         for cond, runs in results.items():
             s = summarise([runs[i] for i in pick])
             print(f"{cond:<26} | {s['success']*100:6.0f}% | {s['llm_calls']:5.1f} | "
+                  f"{s['tool_calls']:5.1f} | {s['max_fanout']:3.0f} | "
                   f"{s['raw']:8.0f} | {s['eff']:8.0f}")
 
     print("\n=== snippets the model wrote (the 0.8.0 failure modes) " + "=" * 19)

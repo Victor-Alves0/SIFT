@@ -35,6 +35,17 @@ Tools:
    Assign the data you want back to a variable named `output` — or just leave it as
    the last expression, which is promoted to `output` like in a REPL.
 
+CHOOSING between execute_tool and run_code — decide by the SHAPE of the work:
+  * one call, and you want its whole result          -> execute_tool
+  * the SAME tool once per item in a list (open each
+    message id, look up each address, fetch each row) -> ONE run_code with a loop.
+    NEVER one execute_tool per item: every result then lands in the conversation in
+    full, and stays there. A loop keeps them in the sandbox and returns only the bit
+    you need. This is the single biggest saving available to you.
+  * a big result you only need part of               -> run_code
+  * calls whose arguments come from an earlier
+    call's RESULT                                    -> run_code
+
 Keep `output` SMALL: filter, slice and aggregate inside the snippet. Everything you
 put in `output` is re-sent with the whole conversation on every later turn, while
 intermediate values stay in the sandbox for free. Return the 5 rows you need, the
@@ -65,8 +76,9 @@ def code_tool_specs() -> list[dict]:
     for spec in specs:   # nudge the choice at the point the model reads it
         if spec["function"]["name"] == "execute_tool":
             spec["function"]["description"] += (
-                " Prefer this over run_code when a single call answers the request — "
-                "no code to write, nothing to compile.")
+                " Use for a SINGLE call whose whole result you want. Do NOT call it once "
+                "per item of a list — that dumps every result into the conversation; loop "
+                "the items inside one run_code instead.")
     return specs + [
         {"type": "function", "function": {
             "name": "run_code",

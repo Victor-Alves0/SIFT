@@ -24,6 +24,18 @@ def test_code_prompt_tells_the_model_to_keep_output_small(sift):
     assert "execute_tool" in prompt
 
 
+def test_code_prompt_forbids_one_execute_tool_per_item(sift):
+    """The 0.8.0 regression: given execute_tool, the model reads 4 emails with 4
+    execute_tool calls. Turns don't suffer (they go out in parallel) so nothing looks
+    wrong — but 4 full payloads are now in the conversation forever. Measured at ~76%
+    more tokens; the rule that fixes it must not silently drop out of the prompt."""
+    prompt = sift.code_system_prompt
+    assert "NEVER one execute_tool per item" in prompt
+
+    spec = next(t for t in sift.code_tools() if t["function"]["name"] == "execute_tool")
+    assert "per item" in spec["function"]["description"]   # said again where it's read
+
+
 def test_run_code_single_call(sift):
     out = json.loads(sift.run_code("output = call('google_workspace.gmail.read', m=1)"))
     data = out["output"]

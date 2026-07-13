@@ -370,21 +370,26 @@ nearest-but-irrelevant tool when the catalogue doesn't cover the request:
 sift = Sift(min_score=0.3)   # cosine floor (tune per embedding model)
 ```
 
-## Code mode (opt-in — and read the benchmark first)
+## Code mode (opt-in — pick it by the shape of the work)
 
-Code mode lets the model write a snippet that orchestrates several tools in one
-turn. It is **not the default, and our own benchmark says it should not be**:
+Code mode lets the model write a snippet that orchestrates several tools in one turn.
+**It is not a general win, and we benchmarked our own feature to find out where it is
+one** ([full results](benchmarks/RESULTS.md#code-mode-vs-classic-tool-calling)):
 
-> On a 100-tool catalogue with a live model, classic tool calling beat code mode on
-> every metric — 3.1 vs 3.3 turns and **6.5k vs 8.4k effective tokens**, at 100%
-> success for both. The reason is measurable: modern function calling emits
-> **parallel tool calls**, so a 6-lookup fan-out already collapses into one turn
-> without a sandbox. Code mode's headline advantage is mostly already yours for free.
-> ([full results](benchmarks/RESULTS.md#code-mode-vs-classic-tool-calling))
+| task shape | classic | code mode | |
+|---|--:|--:|---|
+| one call answers it | **3.4k** | 3.4k | tie |
+| a few calls, light payloads | **5.7k** | 6.2k | classic |
+| **fan-out: read N items, keep a little** | 8.4k | **4.1k** | **code mode, 2.0×** |
 
-Use it when a task genuinely needs what parallel calls cannot do: **filtering a huge
-result before it reaches the context**, real control flow, or calls whose arguments
-depend on an earlier call's output.
+(effective tokens, 100-tool catalogue, live model, 100% success everywhere)
+
+**Turns are not where code mode wins** — modern function calling emits *parallel tool
+calls*, so a 6-lookup fan-out already collapses into one turn without a sandbox.
+**Payload is where it wins.** Reading 4 emails takes classic and code mode the same 4
+turns, but classic leaves 4 full bodies in the conversation forever, while a snippet
+loops them in the sandbox and returns one line. That is the one thing nothing else in
+the stack can do: **keep a large intermediate result out of the context.**
 
 ```python
 tools  = sift.code_tools()          # search_tools + execute_tool + run_code
@@ -393,10 +398,10 @@ system = sift.code_system_prompt
 sift.run_code("output = call('google_workspace.gmail.read', m=1)")
 ```
 
-Note `execute_tool` is in that surface: a code-mode agent that can only `run_code`
-pays sandbox overhead — and a real parse-failure rate — to do what one JSON call
-does. In the benchmark that cost it **19 snippets vs 2**, and 5 of those 19 hit a
-sandbox failure mode.
+`execute_tool` is in that surface on purpose — a code-mode agent that can only
+`run_code` writes Python for single calls too (**29 snippets vs 2** in the benchmark).
+The prompt then has to be explicit that N items still mean *one* snippet, or the model
+takes the convenient path and dumps every result into the context.
 
 Execution goes through a **pluggable sandbox** backend:
 
