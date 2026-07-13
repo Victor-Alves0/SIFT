@@ -79,6 +79,16 @@ def test_selftest_catches_shadowed_tool():
     assert failures[0].beaten_by in ("mail.gmail.read", "mail.gmail.read2")
 
 
+def test_lint_warns_when_there_is_no_relevance_floor():
+    """The calibration is useless if nobody learns they need it."""
+    s = _sift()
+    msgs = [i.message for i in quality.lint(s).issues]
+    assert any("min_score is 0" in m and "suggest_min_score" in m for m in msgs)
+
+    s.gateway.min_score = 0.4
+    assert not any("min_score" in i.message for i in quality.lint(s).issues)
+
+
 # ------------------------------------------------------- min_score calibration
 
 def test_suggest_min_score_without_negatives_is_a_ceiling(sift):

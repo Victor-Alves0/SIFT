@@ -83,6 +83,14 @@ def lint(sift, *, dup_threshold: float = 0.92, max_desc_len: int = 200,
                                     f"param(s) without description: {', '.join(undocumented)} "
                                     "(the model fills these by guessing)"))
 
+    # with no floor, discovery can never answer "nothing here fits" — it hands back
+    # its top-k however bad, teaching the model that a tool always exists
+    if getattr(sift.gateway, "min_score", 0) <= 0:
+        issues.append(LintIssue("warn", "",
+                                "min_score is 0 — discovery will ALWAYS return its best guess, "
+                                "even for requests no tool can serve. Calibrate a floor with "
+                                "quality.suggest_min_score(sift, negatives=[...])"))
+
     # fragmentation: a category with a single tool wastes a hierarchy level
     cats = Counter(t.parts[0] for t in tools)
     for cat, n in sorted(cats.items()):
